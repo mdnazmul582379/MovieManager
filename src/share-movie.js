@@ -748,35 +748,117 @@ async function receiveEditedField(msg, env, uid, session) {
 async function btnLiveEdit(env, uid) {
   await setMenu(env, uid, "live_edit");
   await setSession(env, uid, { state: "live_edit" });
-  await sendMessage(env, uid, `<b>Live Edit Mode</b>\n\nForward the channel post you want to edit to this chat.`, mainKeyboard());
+  await sendMessage(
+    env,
+    uid,
+    `<b>Live Edit Mode</b>\n\nSend the Telegram channel post <b>link</b> here, for example:\n<code>https://t.me/c/4412508133/3</code>\n\n<b>Automatic mode:</b> if this bot has access to the channel, it will fetch/forward the post automatically and identify the real media File ID, caption, channel and message ID.\n\nYou may also <b>forward the post</b> directly to this chat.`,
+    mainKeyboard()
+  );
 }
 
 function parseTelegramChannelMessageLink(text) {
-  const m = String(text || "").match(/^https?:\/\/t\.me\/c\/(\d+)\/(\d+)(?:[?#].*)?$/i);
+  const m = String(text || "").trim().match(/^https?:\/\/t\.me\/c\/(\d+)\/(\d+)(?:[?#].*)?$/i);
   if (!m) return null;
-  return { channel_id: Number(`-100${m[1]}`), message_id: Number(m[2]), url: text };
+  return { channel_id: Number(`-100${m[1]}`), message_id: Number(m[2]), url: text.trim() };
+}
+
+async function getTelegramChatSafe(env, chatId) {
+  try {
+    const chat = await tg(env, "getChat", { chat_id: chatId });
+    return chat && chat.title ? chat.title : null;
+  } catch (exc) {
+    console.warn("getChat failed for live edit link:", exc?.message || exc);
+    return null;
+  }
+}
+
+function livePostInfoHtml({ channelName, channelId, messageId, fileId, note = "" }) {
+  const name = channelName || "Unknown Channel";
+  const file = fileId || "Unavailable from link";
+  return (
+    `<b>Post Identified</b>\n\n` +
+    `<b>Channel:</b>    ${escapeHtml(name)}\n` +
+    `<b>Channel ID:</b> <code>${channelId}</code>\n` +
+    `<b>Message ID:</b> <code>${messageId}</code>\n` +
+    `<b>File ID:</b>    <code>${escapeHtml(file)}</code>` +
+    (note ? `\n\n${note}` : "")
+  );
+}
+
+async function sendLiveIdentified(env, uid, stored, key, extraNote = "") {
+  const info = livePostInfoHtml({
+    channelName: stored.channel_name,
+    channelId: stored.channel_id,
+    messageId: stored.message_id,
+    fileId: stored.media_id,
+    note: extraNote,
+  });
+  const markup = { inline_keyboard: [[{ text: `${getEmoji('edit')} Edit This Post`, callback_data: `lv_prep::${key}` }]] };
+  if (stored.media_id && stored.media_type === "photo") return sendPhoto(env, uid, stored.media_id, info, markup);
+  if (stored.media_id && stored.media_type === "video") return sendVideo(env, uid, stored.media_id, info, markup);
+  return sendMessage(env, uid, info, markup);
 }
 
 async function receiveLiveLink(link, env, uid) {
   const key = `${link.channel_id}_${link.message_id}`;
-  await statePut(env, `fwd:${key}`, JSON.stringify({
-    media_id: null,
-    media_type: null,
-    caption: "",
-    source_url: link.url,
-  }), 86400);
-  const template = {
+  const existingRaw = await stateGet(env, `fwd:${key}`);
+  const existing = existingRaw ? JSON.parse(existingRaw) : {};
+
+  // A t.me/c/... link does not itself contain the media/file_id. Because the
+  // bot is an administrator/member of the source channel, fetch the actual
+  // channel post through Telegram and let the returned Message object provide
+  // the real media, caption and forward origin.
+  let fetchedMessage = null;
+  let fetchError = null;
+  try {
+    fetchedMessage = await tg(env, "forwardMessage", {
+      chat_id: uid,
+      from_chat_id: link.channel_id,
+      message_id: link.message_id,
+    });
+  } catch (exc) {
+    fetchError = exc;
+    console.warn("Live Edit automatic fetch failed:", exc?.message || exc);
+  }
+
+  if (fetchedMessage) {
+    try {
+      await receiveForwarded(fetchedMessage, env, uid);
+    } finally {
+      // The temporary forwarded copy is only used to read the original
+      // message data. Remove it immediately so the user's chat stays clean.
+      await safeDelete(env, uid, fetchedMessage.message_id);
+    }
+    await setSession(env, uid, { state: "live_edit", live_edit_key: key });
+    return;
+  }
+
+  // If Telegram refuses the automatic fetch (for example, protected content
+  // or insufficient channel access), keep the link record and explain the
+  // fallback instead of pretending the File ID was found.
+  const channelName = existing.channel_name || await getTelegramChatSafe(env, link.channel_id);
+  const stored = {
     channel_id: link.channel_id,
     message_id: link.message_id,
-    media: "keep",
-    caption: "",
-    buttons: []
+    channel_name: channelName || "Unknown Channel",
+    media_id: existing.media_id || null,
+    media_type: existing.media_type || null,
+    caption: existing.caption || "",
+    source_url: link.url,
+    direct_link: true,
   };
-  await setSession(env, uid, { state: "live_edit" });
-  await sendMessage(
-    env, uid,
-    `<b>Live Edit Link Accepted</b>\n\n<b>Channel ID:</b> <code>${link.channel_id}</code>\n<b>Message ID:</b> <code>${link.message_id}</code>\n\nSend the JSON below after adding the new caption/buttons.\n\n<code>${escapeHtml(JSON.stringify(template, null, 2))}</code>`,
-    mainKeyboard()
+  await statePut(env, `fwd:${key}`, JSON.stringify(stored), 86400);
+  await setSession(env, uid, { state: "live_edit", live_edit_key: key });
+
+  const reason = fetchError?.message
+    ? `<b>Automatic fetch failed:</b> ${escapeHtml(fetchError.message)}`
+    : `<b>Automatic fetch failed.</b>`;
+  await sendLiveIdentified(
+    env,
+    uid,
+    stored,
+    key,
+    `${reason}\n\nMake sure the bot can access the source channel, or forward the post manually once.`
   );
 }
 
@@ -793,26 +875,44 @@ async function receiveForwarded(msg, env, uid) {
   if (msg.photo) { mediaId = msg.photo[msg.photo.length - 1].file_id; mediaType = "photo"; }
   else if (msg.video) { mediaId = msg.video.file_id; mediaType = "video"; }
   const key = `${chId}_${mId}`;
-  await statePut(env, `fwd:${key}`, JSON.stringify({ media_id: mediaId, media_type: mediaType, caption: msg.caption || "" }), 86400);
-  const info = `<b>Post Identified</b>\n\n<b>Channel:</b>    ${chName}\n<b>Channel ID:</b> <code>${chId}</code>\n<b>Message ID:</b> <code>${mId}</code>\n<b>File ID:</b>    <code>${mediaId || "none"}</code>`;
-  const markup = { inline_keyboard: [[{ text: `${getEmoji('edit')} Edit This Post`, callback_data: `lv_prep::${key}` }]] };
-  if (mediaId && mediaType === "photo") await sendPhoto(env, uid, mediaId, info, markup);
-  else if (mediaId && mediaType === "video") await sendVideo(env, uid, mediaId, info, markup);
-  else await sendMessage(env, uid, info, markup);
+  const stored = {
+    channel_id: chId,
+    message_id: mId,
+    channel_name: chName || "Unknown Channel",
+    media_id: mediaId,
+    media_type: mediaType,
+    caption: msg.caption || msg.text || "",
+    source_url: `https://t.me/c/${String(Math.abs(chId)).replace(/^100/, "")}/${mId}`,
+    direct_link: false,
+  };
+  await statePut(env, `fwd:${key}`, JSON.stringify(stored), 86400);
+  await sendLiveIdentified(env, uid, stored, key);
 }
 
 async function cbLivePrepare(cq, env, key) {
   await answerCallback(env, cq.id);
-  const ids = key.split("_");
   const raw = await stateGet(env, `fwd:${key}`);
   const stored = raw ? JSON.parse(raw) : {};
   const template = {
-    channel_id: Number(ids[0]), message_id: Number(ids[1]), media: "keep",
-    caption: stored.caption || "New caption here",
-    buttons: [{ text: "How To Download", url: "https://t.me/example" }, { text: "Download", url: "https://t.me/example" }],
+    channel_id: Number(stored.channel_id),
+    message_id: Number(stored.message_id),
+    media: stored.media_id || null,
+    caption: stored.caption || "",
+    buttons: [
+      { text: "How To Download", url: CACHE_HOW_TO_DOWNLOAD_URL },
+      { text: "Download", url: "https://t.me/example" },
+    ],
   };
   const js = JSON.stringify(template, null, 4);
-  await sendMessage(env, cq.message.chat.id, `<b>Copy, edit, and send back this JSON:</b>\n\n<code>${js}</code>\n\nSet <code>media</code> to <code>change</code> and attach a photo/video to replace media.`);
+  const note = stored.media_id
+    ? `<b>Media:</b> the real Telegram File ID is already filled in. Keep it unchanged for a caption/button-only edit.`
+    : `<b>Media:</b> the original File ID is not available from the direct link. If you need the actual File ID, forward the post once and press <b>Edit This Post</b> again.`;
+  await sendMessage(
+    env,
+    cq.message.chat.id,
+    `<b>✏️ Live Edit JSON</b>\n\n${note}\n\n<pre><code class="language-json">${escapeHtml(js)}</code></pre>`,
+    mainKeyboard()
+  );
 }
 
 async function receiveLiveJson(text, msg, env, uid) {
