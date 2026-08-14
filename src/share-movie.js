@@ -1,13 +1,23 @@
 import { DurableObject } from "cloudflare:workers";
 
-function getChannels(env) { try { return JSON.parse(env.TG_CHANNELS || "{}"); } catch { return {}; } }
+function getChannels(env) {
+  try {
+    const raw = JSON.parse(env.TG_CHANNELS || "{}");
+    const out = {};
+    for (const [name, value] of Object.entries(raw || {})) {
+      if (typeof value === "string") out[name] = value;
+      else if (value && typeof value.id !== "undefined") out[name] = String(value.id);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 const KNOWN_PREFIXES = ["drafts:", "session:", "schedule:", "fwd:", "menu:"];
 
 const CACHE_CHANNELS = {
-  "Movie Lover": { id: "-1002110122307", hour: 20, minute: 0, count: 1 },
-  "Adult Movie": { id: "-1002264628855", hour: 23, minute: 0, count: 1 },
-  "FB Viral Videos": { id: "-1002028611242", hour: 0, minute: 0, count: 2 },
+  "Check": { id: "-1004412508133", hour: 20, minute: 0, count: 1 },
 };
 
 const E = {
@@ -213,7 +223,7 @@ export async function handleShareUpdate(update, env) {
 }
 
 export async function handleShareScheduled(event, env, ctx) {
-  // Share Movie state is now stored in sharded Durable Objects. No KV cleanup scan is needed.
+  if (event.cron === "0 0 * * *") ctx.waitUntil(cleanupUnknownKeys(env));
 }
 
 export async function openShareMenu(env, uid) {
@@ -326,9 +336,7 @@ async function cmdHelp(env, uid) {
     `<b>Post Movie submenu</b>\n  Add Post, Preview, Send Post, Clear All, Back.\n\n` +
     `<b>Movie Cache submenu</b>\n  Upload Data, View Data, Download Data, Post From Data, Edit Data, Delete Data, Clear All, Back.\n\n` +
     `<b>Auto-post schedule (Bangladesh time)</b>\n` +
-    `  Movie Lover - 8:00 PM, 1 post/day\n` +
-    `  Adult Movie - 11:00 PM, 1 post/day\n` +
-    `  FB Viral Videos - 12:00 AM, 2 posts/day\n\n` +
+    `  Check - 8:00 PM, 1 post/day\n\n` +
     `<b>Post Movie - JSON format</b>\n<code>{\n  "TGTitle":         "Movie Name (2024)",\n  "BGTitle":         "Movie Name (2024) 1080p BluRay | Full Movie",\n  "Language":        "English / Hindi",\n  "Quality":         "1080p BluRay",\n  "Duration":        "2h 15m",\n  "Release_year":    "2024",\n  "BGThumbnail":     "https://.../poster.jpg",\n  "TGTitlehumbnail": "https://.../poster.jpg",\n  "Video_Url":       "https://.../video",\n  "Permalink":       "N/A",\n  "Labels":          "Adult,Drama,Erotic,ESubs,K-Movie,Korean,Romance",\n  "Synopsis":        "Short plot summary...",\n  "MovieId":         "movie_name_2024",\n  "links": [\n    { "text": "How To Download", "url": "https://t.me/backup2k24/72" }\n  ]\n}</code>\n\n` +
     `<b>Permalink</b> = <code>N/A</code> -> auto-built from TGTitle + Release_year.\n<b>Synopsis</b> / <b>MovieId</b> are used for the second Blogger site (gallery + download page); MovieId falls back to Permalink if omitted.\n<b>Long JSON / multiple posts:</b> upload a <b>.txt</b> or <b>.json</b> file instead of typing it (avoids Telegram's text length limit). A JSON <b>array</b> in the file/message adds multiple drafts at once.\n\n<b>Commands</b>\n  /start - Main menu.\n  /help  - This reference.\n  /cancel - Cancel current operation.\n`;
   const menu = await getMenu(env, uid);
@@ -359,7 +367,7 @@ async function enterMovieCacheMenu(env, uid) {
   await sendMessage(
     env, uid,
     `<b>Movie Cache</b>\n\nEach channel has its own daily auto-post queue (Bangladesh time):\n\n` +
-      `<b>Movie Lover</b> - 8:00 PM, 1 post/day\n<b>Adult Movie</b> - 11:00 PM, 1 post/day\n<b>FB Viral Videos</b> - 12:00 AM, 2 posts/day\n\n` +
+      `<b>Check</b> - 8:00 PM, 1 post/day\n\n` +
       `Use the buttons below to upload, view, download, edit, delete, or post from the cache.`,
     movieCacheMenuKeyboard()
   );
@@ -531,7 +539,7 @@ async function cbChannelSelect(cq, env, uid, chName) {
   }
   let chId = null, chLabel = "Blogger";
   if (destination !== "blogger") {
-    chId = getChannels(env)[chName];
+    chId = getChannels(env)[chName] || null;
     if (!chId) {
       await editMessageText(env, cq.message.chat.id, cq.message.message_id, `Channel '${chName}' not found.`);
       await setSession(env, uid, { state: "composing" });
@@ -749,7 +757,7 @@ async function receiveForwarded(msg, env, uid) {
   if (msg.photo) { mediaId = msg.photo[msg.photo.length - 1].file_id; mediaType = "photo"; }
   else if (msg.video) { mediaId = msg.video.file_id; mediaType = "video"; }
   const key = `${chId}_${mId}`;
-  await postState(env, `fwd:${key}`).put("value", JSON.stringify({ media_id: mediaId, media_type: mediaType, caption: msg.caption || "" }), { expirationTtl: 86400 });
+  await statePut(env, `fwd:${key}`, JSON.stringify({ media_id: mediaId, media_type: mediaType, caption: msg.caption || "" }), 86400);
   const info = `<b>Post Identified</b>\n\n<b>Channel:</b>    ${chName}\n<b>Channel ID:</b> <code>${chId}</code>\n<b>Message ID:</b> <code>${mId}</code>\n<b>File ID:</b>    <code>${mediaId || "none"}</code>`;
   const markup = { inline_keyboard: [[{ text: `${getEmoji('edit')} Edit This Post`, callback_data: `lv_prep::${key}` }]] };
   if (mediaId && mediaType === "photo") await sendPhoto(env, uid, mediaId, info, markup);
@@ -759,7 +767,7 @@ async function receiveForwarded(msg, env, uid) {
 
 async function cbLivePrepare(cq, env, key) {
   const ids = key.split("_");
-  const raw = await postState(env, `fwd:${key}`).get("value");
+  const raw = await stateGet(env, `fwd:${key}`);
   const stored = raw ? JSON.parse(raw) : {};
   const template = {
     channel_id: Number(ids[0]), message_id: Number(ids[1]), media: "keep",
@@ -778,7 +786,7 @@ async function receiveLiveJson(text, msg, env, uid) {
     return;
   }
   const key = `${data.channel_id}_${data.message_id}`;
-  const raw = await postState(env, `fwd:${key}`).get("value");
+  const raw = await stateGet(env, `fwd:${key}`);
   const stored = raw ? JSON.parse(raw) : {};
   let finalMediaId, finalMediaType;
   if (data.media === "change") {
@@ -820,10 +828,6 @@ async function cbLiveConfirm(cq, env, uid) {
   } catch (exc) {
     await sendMessage(env, cq.message.chat.id, `Update failed: ${exc.message}`, mainKeyboard());
   }
-}
-
-function postState(env, key) {
-  return env.POST_STATE.get(env.POST_STATE.idFromName(String(key)));
 }
 
 function cacheStub(env, channelName) {
@@ -1667,7 +1671,6 @@ function resolveMovieId(post) {
 
 function buildBloggerHtmlV2(post) {
   const thumb = post.bg_thumbnail && post.bg_thumbnail.toUpperCase?.() !== "N/A" ? post.bg_thumbnail : "";
-  const video = post.video_url && post.video_url.toUpperCase?.() !== "N/A" ? post.video_url : "";
   const title = post.tg_title || post.bg_title || "Untitled";
   const synopsis = post.synopsis || "";
   const movieId = resolveMovieId(post);
@@ -1696,8 +1699,7 @@ function buildBloggerHtmlV2(post) {
     `      <i class="fa-solid fa-circle-down" style="margin-right: 5px;"></i> GET MOVIE\n` +
     `    </a>\n` +
     `  </div>\n` +
-    `</div>\n\n` +
-    `<div id="video-url" style="display:none;">${escapeHtml(video)}</div>`
+    `</div>`
   );
 }
 
@@ -1780,7 +1782,10 @@ async function publishPost(env, destination, chId, post) {
   }
   if (destination !== "blogger") {
     const downloadUrl = blogUrl2 || blogUrl;
-    if (destination === "both") post.links = [...(post.links || []), { text: "Download", url: downloadUrl }];
+    if (destination === "both" && downloadUrl) {
+      const existing = Array.isArray(post.links) ? post.links : [];
+      post.links = [...existing, { text: "Download", url: downloadUrl }];
+    }
     const markup = post.links && post.links.length ? { inline_keyboard: linkRows(post.links) } : undefined;
     await sendPostMessage(env, chId, post, markup);
   }
@@ -1916,40 +1921,61 @@ function linkRows(links) {
   return rows;
 }
 
+async function cleanupUnknownKeys(env) {
+  // Legacy KV cleanup is intentionally gone. Share Movie state now lives in
+  // sharded Durable Objects and does not require a global scan.
+  return;
+}
+
+function stateStub(env, scope) {
+  return env.POST_STATE.get(env.POST_STATE.idFromName(String(scope)));
+}
+
+async function stateGet(env, key) {
+  return stateStub(env, key).get("value");
+}
+
+async function statePut(env, key, value, ttlSeconds = 0) {
+  return stateStub(env, key).put("value", value, ttlSeconds);
+}
+
+async function stateDelete(env, key) {
+  return stateStub(env, key).delete("value");
+}
 
 async function getDrafts(env, uid) {
-  const raw = await postState(env, `drafts:${uid}`).get("value");
+  const raw = await stateGet(env, `user:${uid}:drafts`);
   return raw ? JSON.parse(raw) : {};
 }
 
 async function setDrafts(env, uid, drafts) {
-  await postState(env, `drafts:${uid}`).put("value", JSON.stringify(drafts), { expirationTtl: 1209600 });
+  await statePut(env, `user:${uid}:drafts`, JSON.stringify(drafts), 1209600);
 }
 
 async function deleteDrafts(env, uid) {
-  await postState(env, `drafts:${uid}`).delete("value");
+  await stateDelete(env, `user:${uid}:drafts`);
 }
 
 async function getSession(env, uid) {
-  const raw = await postState(env, `session:${uid}`).get("value");
+  const raw = await stateGet(env, `user:${uid}:session`);
   return raw ? JSON.parse(raw) : {};
 }
 
 async function setSession(env, uid, session) {
-  await postState(env, `session:${uid}`).put("value", JSON.stringify(session), { expirationTtl: 21600 });
+  await statePut(env, `user:${uid}:session`, JSON.stringify(session), 21600);
 }
 
 async function clearSession(env, uid) {
-  await postState(env, `session:${uid}`).delete("value");
+  await stateDelete(env, `user:${uid}:session`);
 }
 
 async function getMenu(env, uid) {
-  const raw = await postState(env, `menu:${uid}`).get("value");
+  const raw = await stateGet(env, `user:${uid}:menu`);
   return raw || "main";
 }
 
 async function setMenu(env, uid, menu) {
-  await postState(env, `menu:${uid}`).put("value", menu, { expirationTtl: 2592000 });
+  await statePut(env, `user:${uid}:menu`, menu, 2592000);
 }
 
 async function tg(env, method, payload) {
@@ -1989,7 +2015,16 @@ async function safeDelete(env, chatId, msgId) { if (msgId) await deleteMessage(e
 
 async function sendPostMessage(env, chatId, post, markup, isPreview = false) {
   const caption = formatPost(post, { note: isPreview });
-  if (post.tg_thumbnail) return sendPhoto(env, chatId, post.tg_thumbnail, caption, markup);
+  if (post.tg_thumbnail) {
+    try {
+      return await sendPhoto(env, chatId, post.tg_thumbnail, caption, markup);
+    } catch (photoErr) {
+      // Telegram file_ids belong to the bot that created them. A file_id copied
+      // from an older bot cannot be reused by a newly created bot. Fall back to
+      // a text preview/post so one stale thumbnail never blocks the operation.
+      console.warn("Thumbnail send failed; falling back to text:", photoErr?.message || photoErr);
+    }
+  }
   return sendMessage(env, chatId, caption, markup);
 }
 

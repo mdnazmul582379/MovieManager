@@ -1,54 +1,32 @@
 import { DurableObject } from "cloudflare:workers";
 
 /**
- * Small, key-sharded Durable Object used instead of KV for Share Movie's
- * short-lived drafts, sessions, menus, and forwarded-post metadata.
- *
- * Each logical key gets its own DO instance, so unrelated users/records do
- * not serialize behind one global state object.
+ * Sharded Share Movie state.
+ * Each logical scope (user drafts/session/menu or forwarded-post key)
+ * is mapped to its own Durable Object instance by the caller.
  */
 export class PostStateDO extends DurableObject {
-  async get(key = "value") {
+  async get(key) {
     const record = await this.ctx.storage.get(key);
     if (!record) return null;
-    if (record.expiresAt && record.expiresAt <= Date.now()) {
-      await this.ctx.storage.delete(key);
-      return null;
+    if (record && typeof record === "object" && Number.isFinite(record.expiresAt)) {
+      if (record.expiresAt <= Date.now()) {
+        await this.ctx.storage.delete(key);
+        return null;
+      }
+      return record.value ?? null;
     }
-    return record.value;
+    return record;
   }
 
-  async put(key = "value", value, options = {}) {
-    const ttl = Number(options?.expirationTtl || 0);
-    const record = {
-      value,
-      expiresAt: ttl > 0 ? Date.now() + ttl * 1000 : null,
-    };
-    await this.ctx.storage.put(key, record);
-    if (record.expiresAt) {
-      await this.ctx.storage.setAlarm(record.expiresAt);
-    }
+  async put(key, value, ttlSeconds = 0) {
+    const expiresAt = Number(ttlSeconds) > 0 ? Date.now() + Number(ttlSeconds) * 1000 : 0;
+    await this.ctx.storage.put(key, { value, expiresAt });
     return true;
   }
 
-  async delete(key = "value") {
+  async delete(key) {
     await this.ctx.storage.delete(key);
     return true;
-  }
-
-  async alarm() {
-    const now = Date.now();
-    const entries = await this.ctx.storage.list();
-    let next = null;
-
-    for (const [key, record] of entries) {
-      if (record?.expiresAt && record.expiresAt <= now) {
-        await this.ctx.storage.delete(key);
-      } else if (record?.expiresAt && (!next || record.expiresAt < next)) {
-        next = record.expiresAt;
-      }
-    }
-
-    if (next) await this.ctx.storage.setAlarm(next);
   }
 }

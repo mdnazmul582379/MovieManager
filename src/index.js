@@ -134,26 +134,12 @@ async function handleMovieDataHttp(request, env, ctx) {
     const id = url.searchParams.get("id");
     if (!id) return new Response(JSON.stringify({ error: "NO_ID_PROVIDED" }), { status: 400, headers: { "Content-Type": "application/json" } });
     try {
-      const cacheKey = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(id)}`);
-      const cached = await caches.default.match(cacheKey);
-      if (cached) return cached;
-
       const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
       const data = await stub.get(id);
-      if (!data) return new Response(JSON.stringify({ error: "MOVIE_NOT_FOUND" }), { status: 404, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
-
-      const response = new Response(JSON.stringify(data), {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-          "Cache-Control": "public, max-age=600",
-        },
-      });
-      ctx.waitUntil(caches.default.put(cacheKey, response.clone()));
-      return response;
+      if (!data) return new Response(JSON.stringify({ error: "MOVIE_NOT_FOUND" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=600" } });
     } catch (e) {
-      console.error("get-movie error:", e);
-      return new Response(JSON.stringify({ error: "INTERNAL_ERROR" }), { status: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+      return new Response(JSON.stringify({ error: "INTERNAL_ERROR" }), { status: 500, headers: { "Content-Type": "application/json" } });
     }
   }
   return null;
@@ -188,9 +174,30 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Share Movie keeps its existing scheduled automation. Movie Data no
-    // longer scans the entire Durable Object just to warm the edge cache;
-    // cache entries are populated on write and on cache-miss reads.
+    // Keep the existing automation cleanup schedule.
     await handleShareScheduled(event, env, ctx);
+    // Movie Data's cache warm-up is safe to run alongside it in the same
+    // Worker; it uses a separate Durable Object namespace.
+    if (event.cron === "0 0 * * *" || event.cron === "0 18 * * *") {
+      const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
+      ctx.waitUntil((async () => {
+        let cursor = null;
+        for (;;) {
+          const page = await stub.list(cursor);
+          for (const id of page.ids) {
+            const data = await stub.get(id);
+            if (data) {
+              const key = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(id)}`);
+              const res = new Response(JSON.stringify(data), {
+                headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" },
+              });
+              await caches.default.put(key, res);
+            }
+          }
+          cursor = page.cursor;
+          if (!cursor) break;
+        }
+      })());
+    }
   },
 };
