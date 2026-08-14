@@ -99,7 +99,6 @@ async function handleAddJson(message, env, sessionStub) {
     return;
   }
 
-  // Accept either a single movie object, or an array of movie objects for bulk add.
   const items = Array.isArray(data) ? data : [data];
   if (!items.length) {
     await tg(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ Empty JSON array. Try again, or press Back." });
@@ -110,18 +109,25 @@ async function handleAddJson(message, env, sessionStub) {
   const added = [];
   const failed = [];
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    if (!item || typeof item !== "object" || !item.id || typeof item.id !== "string") {
-      failed.push(`#${i + 1}`);
-      continue;
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item || typeof item !== "object" || !item.id || typeof item.id !== "string") {
+        failed.push(`#${i + 1}`);
+        continue;
+      }
+      try {
+        await stub.put(item.id, item);
+        await cacheMovie(item.id, item);
+        added.push(item.id);
+      } catch (e) {
+        console.error("handleAddJson item failed:", item.id, e);
+        failed.push(`#${i + 1}`);
+      }
     }
-    await stub.put(item.id, item);
-    await cacheMovie(item.id, item);
-    added.push(item.id);
+  } finally {
+    await sessionStub.clear(userId);
   }
-
-  await sessionStub.clear(userId);
 
   const lines = [];
   if (added.length) {
@@ -129,7 +135,7 @@ async function handleAddJson(message, env, sessionStub) {
     added.forEach((id) => lines.push(`• <code>${escHtml(id)}</code>`));
   }
   if (failed.length) {
-    lines.push(`⚠️ Skipped ${failed.length} item(s) missing a valid string "id": ${failed.join(", ")}`);
+    lines.push(`⚠️ Skipped ${failed.length} item(s) missing a valid string "id" or failed to save: ${failed.join(", ")}`);
   }
   if (!lines.length) lines.push("⚠️ Nothing was added.");
 
@@ -174,10 +180,13 @@ async function handleEditJson(message, env, sessionStub, id) {
     return;
   }
   data.id = id;
-  const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  await stub.put(id, data);
-  await cacheMovie(id, data);
-  await sessionStub.clear(userId);
+  try {
+    const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
+    await stub.put(id, data);
+    await cacheMovie(id, data);
+  } finally {
+    await sessionStub.clear(userId);
+  }
   await tg(env, "sendMessage", { chat_id: message.chat.id, text: `✅ Updated <code>${escHtml(id)}</code>.`, parse_mode: "HTML" });
   await sendMenu(env, message.chat.id, "movies");
 }
@@ -203,15 +212,19 @@ async function handleDeleteId(message, env, sessionStub) {
 async function handleDeleteConfirm(message, env, sessionStub, id) {
   const text = (message.text || "").trim();
   const userId = String(message.from.id);
-  await sessionStub.clear(userId);
+  try {
+    if (text !== "✅ Confirm Delete") return;
+    const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
+    await stub.delete(id);
+    await uncacheMovie(id);
+  } finally {
+    await sessionStub.clear(userId);
+  }
   if (text !== "✅ Confirm Delete") {
     await tg(env, "sendMessage", { chat_id: message.chat.id, text: "✖️ Cancelled." });
     await sendMenu(env, message.chat.id, "movies");
     return;
   }
-  const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  await stub.delete(id);
-  await uncacheMovie(id);
   await tg(env, "sendMessage", { chat_id: message.chat.id, text: `🗑 Deleted <code>${escHtml(id)}</code>.`, parse_mode: "HTML" });
   await sendMenu(env, message.chat.id, "movies");
 }
@@ -240,8 +253,6 @@ async function handleMessage(message, env) {
   if (text === "➕ Add") {
     await sessionStub.set(String(userId), { step: "awaiting_add_json" });
     const example = '{\n  "id": "arjunsonofvyjayanthi2025",\n  "title": "Arjun S/O Vyjayanthi (2025) Hindi Dual Audio WEBRip 1080p & 720p | Full Movie on Mov4KHub",\n  "meta": {\n    "imdb": "7.8/10",\n    "lang": "Hindi",\n    "genre": "Action",\n    "year": "2025",\n    "audio": "Hindi + Telugu",\n    "quality": "WEBRip 1080p"\n  },\n  "stream": "https://mov8khub.blogspot.com/2026/08/arjunsonofvyjayanthi2025.html",\n  "tele": [\n    {\n      "label": "HEVC AMZN WEBRip 1080p",\n      "url": "https://t.me/TG_Downlad_bot?start=arjunsopvZ"\n    },\n    {\n      "label": "HEVC AMZN WEBRip 720p",\n      "url": "https://t.me/TG_Downlad_bot?start=6a778aeaHM"\n    }\n  ],\n  "terabox": [\n    {\n      "label": "HEVC AMZN WEBRip 1080p",\n      "url": "https://1024terabox.com/s/1uStH7Q4H_eHy3_4PJkUhsA"\n    },\n    {\n      "label": "HEVC AMZN WEBRip 720p",\n      "url": "https://1024terabox.com/s/12ZlkKr86VmMVzZagxp2x3Q"\n    }\n  ],\n  "screenshots": [\n    "https://i.ibb.co.com/5xjydyXw/vlcsnap-2026-07-07-07h16m31s124-th.jpg",\n    "https://i.ibb.co.com/YHNhyxS/vlcsnap-2026-07-07-079h20m42s206-th.jpg",\n    "https://i.ibb.co.com/ZpRDknyh/vlcsnap-2026-0-7-07-07h22m10s794-th.jpg",\n    "https://i.ibb.co.com/fGxt0yVY/vlcsnap-2026-07-07-07h23m18s075-th.jpg",\n    "https://i.ibb.co.com/BV9f3Pn6/vlcsnap-2026-07-07-07h259m45s912-th.jpg",\n    "https://i.ibb.co.com/xSMFjQ0V/vlcsnap-2026-07-07-07h249m32s993-th.jpg"\n  ]\n}\n\nOR for multiple movies at once (send an array; every item uses the same full movie-data structure):\n[\n  {\n    "id": "arjunsonofvyjayanthi2025",\n    "title": "Arjun S/O Vyjayanthi (2025) Hindi Dual Audio WEBRip 1080p & 720p | Full Movie on Mov4KHub",\n    "meta": { "imdb": "7.8/10", "lang": "Hindi", "genre": "Action", "year": "2025", "audio": "Hindi + Telugu", "quality": "WEBRip 1080p" },\n    "stream": "https://mov8khub.blogspot.com/2026/08/arjunsonofvyjayanthi2025.html",\n    "tele": [\n      { "label": "HEVC AMZN WEBRip 1080p", "url": "https://t.me/TG_Downlad_bot?start=arjunsopvZ" },\n      { "label": "HEVC AMZN WEBRip 720p", "url": "https://t.me/TG_Downlad_bot?start=6a778aeaHM" }\n    ],\n    "terabox": [\n      { "label": "HEVC AMZN WEBRip 1080p", "url": "https://1024terabox.com/s/1uStH7Q4H_eHy3_4PJkUhsA" },\n      { "label": "HEVC AMZN WEBRip 720p", "url": "https://1024terabox.com/s/12ZlkKr86VmMVzZagxp2x3Q" }\n    ],\n    "screenshots": [\n      "https://i.ibb.co.com/5xjydyXw/vlcsnap-2026-07-07-07h16m31s124-th.jpg",\n      "https://i.ibb.co.com/YHNhyxS/vlcsnap-2026-07-07-079h20m42s206-th.jpg"\n    ]\n  },\n  {\n    "id": "anothermovie2025",\n    "title": "Another Movie (2025)",\n    "meta": { "imdb": "8.0/10", "lang": "Hindi", "genre": "Action", "year": "2025", "audio": "Hindi + Telugu", "quality": "WEBRip 1080p" },\n    "stream": "https://mov8khub.blogspot.com/2026/08/anothermovie2025.html",\n    "tele": [\n      { "label": "HEVC AMZN WEBRip 1080p", "url": "https://t.me/TG_Downlad_bot?start=example1080" },\n      { "label": "HEVC AMZN WEBRip 720p", "url": "https://t.me/TG_Downlad_bot?start=example720" }\n    ],\n    "terabox": [\n      { "label": "HEVC AMZN WEBRip 1080p", "url": "https://1024terabox.com/s/example1080" },\n      { "label": "HEVC AMZN WEBRip 720p", "url": "https://1024terabox.com/s/example720" }\n    ],\n    "screenshots": []\n  }\n]';
-    // One Telegram message containing two independent JSON code blocks.
-    // The explanatory text stays outside both blocks, so each block can be copied separately.
     const marker = "\n\nOR for multiple movies at once (send an array; every item uses the same full movie-data structure):\n";
     const splitAt = example.indexOf(marker);
     const singleExample = splitAt >= 0 ? example.slice(0, splitAt) : example;
