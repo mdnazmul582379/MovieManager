@@ -81,6 +81,18 @@ async function routeMessage(update, env) {
     await openShareMenu(env, uid);
     return true;
   }
+  if (text === "⬅️ Back") {
+    if (await movieDataHasSession(env, uid)) {
+      await handleMovieDataUpdate(update, env);
+      return true;
+    }
+    if (await shareHasSession(env, uid)) {
+      await handleShareUpdate(update, env);
+      return true;
+    }
+    await sendUnifiedMenu(env, msg.chat.id);
+    return true;
+  }
 
   // If Movie Data is in an active input step, keep the message inside that
   // module. Otherwise, if Share Movie has an active input step, keep it there.

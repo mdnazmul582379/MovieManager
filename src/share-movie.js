@@ -18,6 +18,8 @@ const KNOWN_PREFIXES = ["drafts:", "session:", "schedule:", "fwd:", "menu:"];
 
 const CACHE_CHANNELS = {
   "Check": { id: "-1004412508133", hour: 20, minute: 0, count: 1 },
+  // Neutral cache pool. It is not a Telegram destination and never auto-posts.
+  "Random": { id: null, manualOnly: true },
 };
 
 const E = {
@@ -243,10 +245,10 @@ async function handleUpdate(update, env) {
   if (text === "/start") return cmdStart(env, uid);
   if (text.startsWith("/help")) return cmdHelp(env, uid);
   if (text.startsWith("/cancel")) return cmdCancel(env, uid);
-  if (text === "Post Movie") return enterPostMovieMenu(env, uid);
-  if (text === "Movie Cache") return enterMovieCacheMenu(env, uid);
-  if (text === "Live Edit") return btnLiveEdit(env, uid);
-  if (text === "Back") return handleBack(env, uid);
+  if (text === "Post Movie" || text === "🎬 Post Movie") return enterPostMovieMenu(env, uid);
+  if (text === "Movie Cache" || text === "💾 Movie Cache") return enterMovieCacheMenu(env, uid);
+  if (text === "Live Edit" || text === "✏️ Live Edit") return btnLiveEdit(env, uid);
+  if (text === "Back" || text === "⬅️ Back") return handleBack(env, uid);
   const menu = await getMenu(env, uid);
   const session = await getSession(env, uid);
   if (menu === "post_movie") {
@@ -274,8 +276,10 @@ async function handleUpdate(update, env) {
   if (session.state === "cache_delete_wait_permalink") return cacheReceiveDeletePermalink(msg, env, uid, session);
   if (session.state === "live_edit") {
     if (msg.forward_origin || msg.forward_from_chat) return receiveForwarded(msg, env, uid);
-    const t = msg.caption || msg.text || "";
+    const t = String(msg.caption || msg.text || "").trim();
     if (t.includes("channel_id")) return receiveLiveJson(t, msg, env, uid);
+    const liveUrl = parseTelegramChannelMessageLink(t);
+    if (liveUrl) return receiveLiveLink(liveUrl, env, uid);
     return;
   }
   if (session.state === "composing") return receivePost(msg, env, uid);
@@ -308,12 +312,14 @@ async function handleCallback(cq, env, adminIds) {
   if (data.startsWith("cud1::")) return cbCacheUploadConflict1(cq, env, uid, data);
   if (data.startsWith("cud2::")) return cbCacheUploadConflict2(cq, env, uid, data);
   if (data.startsWith("cu::")) return cbCacheUploadChannel(cq, env, uid, data.split("::")[1]);
-  if (data.startsWith("cd::")) return cbCacheDownload(cq, env, uid, data.split("::")[1]);
-  if (data.startsWith("cp::")) return cbCachePostChannel(cq, env, uid, data.split("::")[1]);
-  if (data.startsWith("ce::")) return cbCacheEditChannel(cq, env, uid, data.split("::")[1]);
+  if (data.startsWith("cv::")) { const [, ch, page] = data.split("::"); return cbCacheView(cq, env, uid, decodeURIComponent(ch || ""), page || "0"); }
+  if (data.startsWith("cd::")) return cbCacheDownload(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
+  if (data.startsWith("cp::")) return cbCachePostChannel(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
+  if (data.startsWith("cpt::")) return cbCacheRandomTarget(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
+  if (data.startsWith("ce::")) return cbCacheEditChannel(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
   if (data.startsWith("cxdel::")) return cbCacheDeleteConfirm(cq, env, uid, data);
-  if (data.startsWith("cx::")) return cbCacheDeleteChannel(cq, env, uid, data.split("::")[1]);
-  if (data.startsWith("ccch::")) return cbCacheClearChannel(cq, env, uid, data.split("::")[1]);
+  if (data.startsWith("cx::")) return cbCacheDeleteChannel(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
+  if (data.startsWith("ccch::")) return cbCacheClearChannel(cq, env, uid, decodeURIComponent(data.split("::")[1] || ""));
   if (data.startsWith("cc1::")) return cbCacheClearConfirm1(cq, env, uid, data);
   if (data.startsWith("cc2::")) return cbCacheClearConfirm2(cq, env, uid, data);
   if (data.startsWith("cef::")) return cbCacheEditField(cq, env, uid, data);
@@ -591,7 +597,8 @@ async function cbChannelSelect(cq, env, uid, chName) {
       await sendMessage(env, uid, `Post ${i + 1} ("${post.tg_title}") failed: ${exc.message}`);
     }
   }
-  if (destination !== "blogger") await addPublishedToCache(env, chLabel, publishedPosts);
+  const cacheTarget = destination === "blogger" ? defaultCacheChannel() : chLabel;
+  if (cacheTarget) await addPublishedToCache(env, cacheTarget, publishedPosts);
   for (const post of posts) await safeDelete(env, uid, post.preview_msg_id);
   await deleteDrafts(env, uid);
   await setSession(env, uid, { state: "composing" });
@@ -744,6 +751,35 @@ async function btnLiveEdit(env, uid) {
   await sendMessage(env, uid, `<b>Live Edit Mode</b>\n\nForward the channel post you want to edit to this chat.`, mainKeyboard());
 }
 
+function parseTelegramChannelMessageLink(text) {
+  const m = String(text || "").match(/^https?:\/\/t\.me\/c\/(\d+)\/(\d+)(?:[?#].*)?$/i);
+  if (!m) return null;
+  return { channel_id: Number(`-100${m[1]}`), message_id: Number(m[2]), url: text };
+}
+
+async function receiveLiveLink(link, env, uid) {
+  const key = `${link.channel_id}_${link.message_id}`;
+  await statePut(env, `fwd:${key}`, JSON.stringify({
+    media_id: null,
+    media_type: null,
+    caption: "",
+    source_url: link.url,
+  }), 86400);
+  const template = {
+    channel_id: link.channel_id,
+    message_id: link.message_id,
+    media: "keep",
+    caption: "",
+    buttons: []
+  };
+  await setSession(env, uid, { state: "live_edit" });
+  await sendMessage(
+    env, uid,
+    `<b>Live Edit Link Accepted</b>\n\n<b>Channel ID:</b> <code>${link.channel_id}</code>\n<b>Message ID:</b> <code>${link.message_id}</code>\n\nSend the JSON below after adding the new caption/buttons.\n\n<code>${escapeHtml(JSON.stringify(template, null, 2))}</code>`,
+    mainKeyboard()
+  );
+}
+
 async function receiveForwarded(msg, env, uid) {
   let chId, mId, chName;
   const o = msg.forward_origin;
@@ -766,6 +802,7 @@ async function receiveForwarded(msg, env, uid) {
 }
 
 async function cbLivePrepare(cq, env, key) {
+  await answerCallback(env, cq.id);
   const ids = key.split("_");
   const raw = await stateGet(env, `fwd:${key}`);
   const stored = raw ? JSON.parse(raw) : {};
@@ -820,7 +857,13 @@ async function cbLiveConfirm(cq, env, uid) {
     if (data.media === "change") {
       await editMessageMedia(env, data.channel_id, data.message_id, { type: data._media_type, media: data._media_id, caption: data.caption }, markup);
     } else {
-      await editMessageCaption(env, data.channel_id, data.message_id, data.caption, markup);
+      // For a direct t.me/c/... link we do not know whether the target is a
+      // media message or a text message. Try caption first, then text.
+      try {
+        await editMessageCaption(env, data.channel_id, data.message_id, data.caption, markup);
+      } catch (captionErr) {
+        await tg(env, "editMessageText", { chat_id: data.channel_id, message_id: data.message_id, text: data.caption, parse_mode: "HTML", reply_markup: markup });
+      }
     }
     await deleteMessage(env, cq.message.chat.id, cq.message.message_id);
     await setSession(env, uid, { state: "live_edit" });
@@ -832,6 +875,11 @@ async function cbLiveConfirm(cq, env, uid) {
 
 function cacheStub(env, channelName) {
   return env.CACHE_QUEUE.get(env.CACHE_QUEUE.idFromName(channelName));
+}
+
+function defaultCacheChannel() {
+  // Blogger-only posts are stored in the neutral Random cache.
+  return "Random";
 }
 
 function toCacheItem(post) {
@@ -849,10 +897,29 @@ async function addPublishedToCache(env, channelName, posts) {
 }
 
 function cacheChannelKeyboard(prefix, includeAll = false) {
-  const names = Object.keys(CACHE_CHANNELS);
-  const row = names.map((n) => ({ text: n, callback_data: `${prefix}::${n}` }));
-  const rows = [row];
+  const names = Object.keys(CACHE_CHANNELS).filter((n) => n !== "Random");
+  const rows = [];
+  let row = [];
+  for (const name of names) {
+    row.push({ text: `${getEmoji('cache')} ${name}`, callback_data: `${prefix}::${encodeURIComponent(name)}` });
+    if (row.length === 2) { rows.push(row); row = []; }
+  }
+  if (row.length) rows.push(row);
+  rows.push([{ text: `${getEmoji('sparkles')} Random`, callback_data: `${prefix}::Random` }]);
   if (includeAll) rows.push([{ text: `${getEmoji('download_data')} Download All`, callback_data: `${prefix}::all` }]);
+  return { inline_keyboard: rows };
+}
+
+function randomCacheTargetKeyboard(env, prefix = "cpt") {
+  const names = Object.keys(getChannels(env));
+  const rows = [];
+  let row = [];
+  for (const name of names) {
+    row.push({ text: `${getEmoji('send')} ${name}`, callback_data: `${prefix}::${encodeURIComponent(name)}` });
+    if (row.length === 2) { rows.push(row); row = []; }
+  }
+  if (row.length) rows.push(row);
+  rows.push([{ text: `${getEmoji('back')} Back`, callback_data: `${prefix}::back` }]);
   return { inline_keyboard: rows };
 }
 
@@ -1325,12 +1392,53 @@ async function cbCacheUploadDone(cq, env, uid, action) {
 }
 
 async function cacheBtnView(env, uid) {
-  const lines = [`<b>Cache Overview</b> (last 7 days)\n`];
-  for (const name of Object.keys(CACHE_CHANNELS)) {
-    const stats = await cacheStub(env, name).getStats(name);
-    lines.push(`<b>${name}</b>\n  Pending: ${stats.total}\n  Posted (7d): ${stats.posted7}\n  Skipped (7d): ${stats.skipped7}\n`);
+  const names = Object.keys(CACHE_CHANNELS).filter((n) => n !== "Random");
+  const rows = [];
+  let row = [];
+  for (const name of names) {
+    row.push({ text: `${getEmoji('cache')} ${name}`, callback_data: `cv::${encodeURIComponent(name)}::0` });
+    if (row.length === 2) { rows.push(row); row = []; }
   }
-  await sendMessage(env, uid, lines.join("\n"), cacheChannelKeyboard("cd", true));
+  if (row.length) rows.push(row);
+  rows.push([
+    { text: `${getEmoji('sparkles')} Random`, callback_data: `cv::Random::0` },
+    { text: `${getEmoji('back')} Back`, callback_data: "cv::back" },
+  ]);
+  await sendMessage(env, uid, `<b>View Data</b>\n\nSelect a cache to view its IDs:`, { inline_keyboard: rows });
+}
+
+async function sendCacheIdsPage(env, uid, channel, page) {
+  const items = await cacheStub(env, channel).getAll(channel);
+  const total = items.length;
+  const pageSize = 50;
+  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  const safePage = Math.min(Math.max(Number(page) || 0, 0), maxPage);
+  const start = safePage * pageSize;
+  const visible = items.slice(start, start + pageSize);
+  const end = visible.length ? start + visible.length : start;
+  let text = `<b>View Data — ${escapeHtml(channel)}</b>\n\n`;
+  text += `<b>Showing ${total ? `${start + 1}-${end}` : "0"}/${total} keys</b>\n\n`;
+  if (!visible.length) {
+    text += `<i>No keys set yet.</i>`;
+  } else {
+    text += visible.map((it, i) => `${start + i + 1}. <code>${escapeHtml(it.permalink || "N/A")}</code>`).join("\n");
+  }
+  const rows = [];
+  if (safePage > 0) rows.push([{ text: `${getEmoji('back')} Previous`, callback_data: `cv::${encodeURIComponent(channel)}::${safePage - 1}` }]);
+  if (safePage < maxPage) rows.push([{ text: `Next ${getEmoji('send')}`, callback_data: `cv::${encodeURIComponent(channel)}::${safePage + 1}` }]);
+  rows.push([{ text: `${getEmoji('back')} Back`, callback_data: "cv::back" }]);
+  await sendMessage(env, uid, text, { inline_keyboard: rows });
+}
+
+async function cbCacheView(cq, env, uid, channel, page) {
+  await answerCallback(env, cq.id);
+  if (channel === "back") {
+    await deleteMessage(env, cq.message.chat.id, cq.message.message_id);
+    await sendMessage(env, uid, `<b>Movie Cache</b>`, movieCacheMenuKeyboard());
+    return;
+  }
+  await deleteMessage(env, cq.message.chat.id, cq.message.message_id);
+  await sendCacheIdsPage(env, uid, channel, Number(page) || 0);
 }
 
 async function cacheBtnDownloadMenu(env, uid) {
@@ -1363,8 +1471,30 @@ async function cacheBtnPostFrom(env, uid) {
 
 async function cbCachePostChannel(cq, env, uid, channel) {
   await answerCallback(env, cq.id);
-  await setSession(env, uid, { state: "cache_post_wait_permalink", cache_channel: channel });
+  if (channel === "Random") {
+    await setSession(env, uid, { state: "cache_post_wait_target", cache_channel: "Random" });
+    await sendMessage(env, uid, `<b>Random Cache</b>\n\nSelect the Telegram channel where the selected Random-cache movie should be posted:`, randomCacheTargetKeyboard(env));
+    return;
+  }
+  await setSession(env, uid, { state: "cache_post_wait_permalink", cache_channel: channel, cache_target_channel: channel });
   await sendMessage(env, uid, `Send the Permalink (ID) of the item from <b>${channel}</b> you want to post now:`, movieCacheMenuKeyboard());
+}
+
+async function cbCacheRandomTarget(cq, env, uid, target) {
+  await answerCallback(env, cq.id);
+  if (target === "back") {
+    await setSession(env, uid, {});
+    await sendMessage(env, uid, `<b>Movie Cache</b>`, movieCacheMenuKeyboard());
+    return;
+  }
+  const channels = getChannels(env);
+  const channelId = channels[target];
+  if (!channelId) {
+    await sendMessage(env, uid, `Channel not found.`, movieCacheMenuKeyboard());
+    return;
+  }
+  await setSession(env, uid, { state: "cache_post_wait_permalink", cache_channel: "Random", cache_target_channel: target });
+  await sendMessage(env, uid, `Send the Permalink (ID) of the item from <b>Random</b> cache to post in <b>${escapeHtml(target)}</b>:`, movieCacheMenuKeyboard());
 }
 
 async function cacheReceivePostPermalink(msg, env, uid, session) {
@@ -1375,7 +1505,12 @@ async function cacheReceivePostPermalink(msg, env, uid, session) {
     await sendMessage(env, uid, `No item found with Permalink "${permalink}" in ${channel}.`, movieCacheMenuKeyboard());
     return;
   }
-  await setSession(env, uid, { cache_channel: channel, cache_preview: item });
+  await setSession(env, uid, {
+    ...session,
+    state: "cache_preview",
+    cache_channel: channel,
+    cache_preview: item,
+  });
   await sendPreviewPost(env, uid, item, cachePreviewActionKeyboard(item));
 }
 
@@ -1442,14 +1577,21 @@ async function cbCachePreviewSend(cq, env, uid, data) {
     await editMessageReplyMarkup(env, cq.message.chat.id, cq.message.message_id, cachePreviewActionKeyboard(item));
     return;
   }
-  const chId = (CACHE_CHANNELS[channel] || {}).id;
+  const targetName = session.cache_target_channel || channel;
+  const chId = channel === "Random"
+    ? getChannels(env)[targetName]
+    : (CACHE_CHANNELS[channel] || {}).id;
+  if (!chId) {
+    await sendMessage(env, uid, `No Telegram destination is selected for this cache item.`, movieCacheMenuKeyboard());
+    return;
+  }
   const markup = item.links && item.links.length ? { inline_keyboard: linkRows(item.links) } : undefined;
   try {
     await deleteMessage(env, cq.message.chat.id, cq.message.message_id);
     await sendPostMessage(env, chId, item, markup);
     await cacheStub(env, channel).resetCycle(channel, item.permalink);
     await setSession(env, uid, {});
-    await sendMessage(env, uid, `Posted to ${channel}. Its 10-day auto-post cycle has been reset.`, movieCacheMenuKeyboard());
+    await sendMessage(env, uid, `Posted to <b>${escapeHtml(targetName)}</b> from <b>${escapeHtml(channel)}</b> cache. Its 10-day auto-post cycle has been reset.`, movieCacheMenuKeyboard());
   } catch (exc) {
     await sendMessage(env, uid, `Send failed: ${exc.message}`, movieCacheMenuKeyboard());
   }
@@ -1809,7 +1951,7 @@ function formatPost(p, opts = {}) {
 }
 
 function mainKeyboard() {
-  return { keyboard: [["Post Movie", "Movie Cache", "Live Edit"]], resize_keyboard: true, one_time_keyboard: false };
+  return { keyboard: [["🎬 Post Movie", "💾 Movie Cache", "✏️ Live Edit"], ["⬅️ Back"]], resize_keyboard: true, one_time_keyboard: false };
 }
 
 function postMovieMenuKeyboard() {
@@ -2062,7 +2204,8 @@ export class ScheduleDO extends DurableObject {
           await sendMessage(this.env, job.uid, `Scheduled post ("${post.tg_title}") failed: ${exc.message}`);
         }
       }
-      if ((job.destination || "both") !== "blogger") await addPublishedToCache(this.env, job.channel_name, publishedPosts);
+      const cacheTarget = (job.destination || "both") === "blogger" ? defaultCacheChannel() : job.channel_name;
+      if (cacheTarget) await addPublishedToCache(this.env, cacheTarget, publishedPosts);
       await sendMessage(this.env, job.uid, `Scheduled batch published (${sentCount}/${job.posts.length}) to <b>${job.channel_name}</b>.`, mainKeyboard());
     }
     if (this.jobs.length) {
@@ -2103,7 +2246,7 @@ export class CacheQueueDO extends DurableObject {
       await this._save();
     }
     const cfg = CACHE_CHANNELS[this.channelName];
-    if (!cfg) return;
+    if (!cfg || cfg.manualOnly || !Number.isFinite(cfg.hour) || !Number.isFinite(cfg.minute)) return;
     const current = await this.ctx.storage.getAlarm();
     if (!current) await this.ctx.storage.setAlarm(nextBDAlarmTime(cfg.hour, cfg.minute));
   }
@@ -2190,7 +2333,7 @@ export class CacheQueueDO extends DurableObject {
   }
   async alarm() {
     const cfg = CACHE_CHANNELS[this.channelName];
-    if (!cfg) return;
+    if (!cfg || cfg.manualOnly || !Number.isFinite(cfg.hour) || !Number.isFinite(cfg.minute)) return;
     const admins = (this.env.ADMIN_IDS || "").split(",").map((s) => s.trim()).filter(Boolean);
     const now = Date.now();
     const TEN_DAYS = 10 * 24 * 3600 * 1000;
