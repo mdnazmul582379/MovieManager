@@ -1,5 +1,5 @@
 { 
-  "name": "MovieManager",
+  "name": "moviemanager",
   "main": "src/index.js",
   "compatibility_date": "2026-07-23",
   "compatibility_flags": ["nodejs_compat"],
