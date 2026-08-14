@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { warmCache } from "./movie-data.js";
 
 function getChannels(env) {
   try {
@@ -2279,6 +2280,18 @@ export class ScheduleDO extends DurableObject {
       if (Array.isArray(saved)) this.jobs = saved;
     });
   }
+  async ensureRecurringAlarm() {
+    const stored = await this.ctx.storage.get("next_recurring_at");
+    const now = Date.now();
+    let nextRecurring = Number.isFinite(stored) ? stored : 0;
+    if (!nextRecurring || nextRecurring <= now) {
+      nextRecurring = Math.min(nextBDAlarmTime(0, 0), nextBDAlarmTime(18, 0));
+    }
+    await this.ctx.storage.put("next_recurring_at", nextRecurring);
+    const current = await this.ctx.storage.getAlarm();
+    if (!current || current > nextRecurring) await this.ctx.storage.setAlarm(nextRecurring);
+    return nextRecurring;
+  }
   async schedule(job, whenMs) {
     const id = crypto.randomUUID();
     this.jobs.push({ id, job, whenMs });
@@ -2292,6 +2305,26 @@ export class ScheduleDO extends DurableObject {
     const due = this.jobs.filter((j) => j.whenMs <= now);
     this.jobs = this.jobs.filter((j) => j.whenMs > now);
     await this.ctx.storage.put("jobs", this.jobs);
+
+    let nextRecurring = await this.ctx.storage.get("next_recurring_at");
+    if (!Number.isFinite(nextRecurring) || nextRecurring <= 0) {
+      nextRecurring = Math.min(nextBDAlarmTime(0, 0), nextBDAlarmTime(18, 0));
+    }
+    if (now >= nextRecurring) {
+      // This is the replacement for the old 00:00/18:00 Worker Cron jobs.
+      // The task is idempotent: rebuilding the public movie cache from the
+      // Durable Object store can safely be repeated after a delayed alarm.
+      try {
+        await warmCache(this.env);
+      } catch (exc) {
+        console.error("Recurring Movie Data warm-cache failed:", exc?.message || exc);
+      }
+      nextRecurring = Math.min(nextBDAlarmTime(0, 0), nextBDAlarmTime(18, 0));
+      await this.ctx.storage.put("next_recurring_at", nextRecurring);
+    } else {
+      await this.ctx.storage.put("next_recurring_at", nextRecurring);
+    }
+
     for (const { job } of due) {
       let sentCount = 0;
       const publishedPosts = [];
@@ -2308,11 +2341,13 @@ export class ScheduleDO extends DurableObject {
       if (cacheTarget) await addPublishedToCache(this.env, cacheTarget, publishedPosts);
       await sendMessage(this.env, job.uid, `Scheduled batch published (${sentCount}/${job.posts.length}) to <b>${job.channel_name}</b>.`, mainKeyboard());
     }
-    if (this.jobs.length) {
-      const next = Math.min(...this.jobs.map((j) => j.whenMs));
-      await this.ctx.storage.setAlarm(next);
-    }
+
+    // Keep both kinds of work on one DO alarm: user-scheduled jobs and the
+    // fixed recurring automation. Only the earliest future event is armed.
+    const jobNext = this.jobs.length ? Math.min(...this.jobs.map((j) => j.whenMs)) : Infinity;
+    await this.ctx.storage.setAlarm(Math.min(jobNext, nextRecurring));
   }
+
 }
 
 export class CacheQueueDO extends DurableObject {

@@ -280,7 +280,7 @@ export async function handleUpdate(update, env) {
   if (update.message) await handleMessage(update.message, env);
 }
 
-async function warmCache(env) {
+export async function warmCache(env) {
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
   let cursor = null;
   for (;;) {

@@ -159,6 +159,13 @@ async function handleMovieDataHttp(request, env, ctx) {
 
 export default {
   async fetch(request, env, ctx) {
+    // Bootstrap the Durable Object scheduler on every Worker request. This
+    // replaces the old account-level Cron triggers with DO Alarms.
+    ctx.waitUntil(
+      env.SCHEDULE.get(env.SCHEDULE.idFromName("global")).ensureRecurringAlarm().catch((e) =>
+        console.error("Scheduler bootstrap failed:", e?.message || e)
+      )
+    );
     const httpResult = await handleMovieDataHttp(request, env, ctx);
     if (httpResult) return httpResult;
     if (request.method !== "POST") {
@@ -185,31 +192,6 @@ export default {
     return new Response("OK");
   },
 
-  async scheduled(event, env, ctx) {
-    // Keep the existing automation cleanup schedule.
-    await handleShareScheduled(event, env, ctx);
-    // Movie Data's cache warm-up is safe to run alongside it in the same
-    // Worker; it uses a separate Durable Object namespace.
-    if (event.cron === "0 0 * * *" || event.cron === "0 18 * * *") {
-      const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-      ctx.waitUntil((async () => {
-        let cursor = null;
-        for (;;) {
-          const page = await stub.list(cursor);
-          for (const id of page.ids) {
-            const data = await stub.get(id);
-            if (data) {
-              const key = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(id)}`);
-              const res = new Response(JSON.stringify(data), {
-                headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" },
-              });
-              await caches.default.put(key, res);
-            }
-          }
-          cursor = page.cursor;
-          if (!cursor) break;
-        }
-      })());
-    }
-  },
+  // No Worker Cron triggers are used. Scheduled automation is handled by ScheduleDO alarms.
+
 };
