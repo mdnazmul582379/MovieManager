@@ -1,0 +1,72 @@
+{
+  "name": "unified-movie-manager",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "keep_vars": true,
+  "vars": {
+    "ADMIN_IDS": "8173882434,6948271128",
+    "BLOG_ID": "4737089004703911546",
+    "BLOG_ID_2": "4888936004722241399",
+    "TG_CHANNELS": "{\"Movie Lover\":{\"id\":\"-1002110122307\"},\"Adult Movie\":{\"id\":\"-1002264628855\"},\"FB Viral Videos\":{\"id\":\"-1002028611242\"}}"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SCHEDULE",
+        "class_name": "ScheduleDO"
+      },
+      {
+        "name": "CACHE_QUEUE",
+        "class_name": "CacheQueueDO"
+      },
+      {
+        "name": "MOVIE_STORE",
+        "class_name": "MovieStoreDO"
+      },
+      {
+        "name": "ADMIN_SESSION",
+        "class_name": "AdminSessionDO"
+      },
+      {
+        "name": "POST_STATE",
+        "class_name": "PostStateDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ScheduleDO"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "CacheQueueDO"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "MovieStoreDO",
+        "AdminSessionDO"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "PostStateDO"
+      ]
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "0 0 * * *",
+      "0 18 * * *"
+    ]
+  }
+}
