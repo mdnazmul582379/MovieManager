@@ -7,10 +7,10 @@
   ],
   "keep_vars": true,
   "vars": {
-    "ADMIN_IDS": "8173882434,6948271128",
+    "ADMIN_IDS": "8173882434,6948271128,7345826645",
     "BLOG_ID": "4737089004703911546",
     "BLOG_ID_2": "4888936004722241399",
-    "TG_CHANNELS": "{\"Movie Lover\":{\"id\":\"-1002110122307\"},\"Adult Movie\":{\"id\":\"-1002264628855\"},\"FB Viral Videos\":{\"id\":\"-1002028611242\"}}"
+    "TG_CHANNELS": "{\"Movie Lover\":{\"id\":\"-1004412508133\"},\"Adult Movie\":{\"id\":\"-1002264628855\"},\"FB Viral Videos\":{\"id\":\"-1002028611242\"}}"
   },
   "durable_objects": {
     "bindings": [
