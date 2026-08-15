@@ -1,28 +1,46 @@
- {
-  "name": "moviemanager",
+{
+  "name": "movie-manager",
   "main": "src/index.js",
   "compatibility_date": "2026-07-23",
   "compatibility_flags": ["nodejs_compat"],
   "keep_vars": true,
+
+  // No kv_namespaces and no triggers/crons block on purpose — every piece of
+  // state lives in a Durable Object, and the periodic maintenance jobs
+  // (movie cache warm-up, stale-session sweep) run on their own DO alarms
+  // instead of Cron Triggers. This keeps the worker's account-wide KV and
+  // Cron Trigger usage at zero.
+
+  // BOT_TOKEN, BLOGGER_CLIENT_ID, BLOGGER_CLIENT_SECRET, BLOGGER_REFRESH_TOKEN
+  // are set separately as Secrets (dashboard → Settings → Variables, or
+  // `wrangler secret put <NAME>`) — never put tokens/secrets in this file.
   "vars": {
     "ADMIN_IDS": "8173882434,6948271128,7345826645",
     "BLOG_ID": "4737089004703911546",
     "BLOG_ID_2": "4888936004722241399",
-    "TG_CHANNELS": "{\"Movie Lover\":\"-1002110122307\",\"Viral Vids\":\"-1002028611242\",\"Adult Movie\":\"-1002264628855\"}"
+    "TG_CHANNELS": "{\"Movie Lover\":\"-1002110122307\",\"Viral Vids\":\"-1002028611242\",\"Adult Movie\":\"-1002264628855\"}",
+    "WEBHOOK_SECRET": "MovieManager_WebhookKey_2k26_FuckYour",
+    "PUBLIC_BASE_URL": "https://movie-manager.adsterrapremium00001.workers.dev"
   },
+
   "durable_objects": {
     "bindings": [
-      { "name": "SCHEDULE", "class_name": "ScheduleDO" },
-      { "name": "CACHE_QUEUE", "class_name": "CacheQueueDO" },
       { "name": "MOVIE_STORE", "class_name": "MovieStoreDO" },
       { "name": "ADMIN_SESSION", "class_name": "AdminSessionDO" },
-      { "name": "POST_STATE", "class_name": "PostStateDO" }
+      { "name": "POST_STATE", "class_name": "PostStateDO" },
+      { "name": "SCHEDULE", "class_name": "ScheduleDO" },
+      { "name": "CACHE_QUEUE", "class_name": "CacheQueueDO" }
     ]
   },
+
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ScheduleDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["CacheQueueDO"] },
-    { "tag": "v3", "new_sqlite_classes": ["MovieStoreDO", "AdminSessionDO"] },
-    { "tag": "v4", "new_sqlite_classes": ["PostStateDO"] }
-  ],
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MovieStoreDO", "AdminSessionDO", "ScheduleDO", "CacheQueueDO"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PostStateDO"]
+    }
+  ]
 }
