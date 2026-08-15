@@ -4,7 +4,7 @@
   "compatibility_date": "2026-07-23",
   "compatibility_flags": ["nodejs_compat"],
   "keep_vars": true,
-
+ 
   // No kv_namespaces and no triggers/crons block on purpose — every piece of
   // state lives in a Durable Object, and the periodic maintenance jobs
   // (movie cache warm-up, stale-session sweep) run on their own DO alarms
