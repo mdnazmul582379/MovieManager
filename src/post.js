@@ -282,6 +282,8 @@ export async function handlePostCallback(cq, env) {
   if (data.startsWith("cud2::")) return cbCacheUploadConflict2(cq, env, uid, data);
   if (data.startsWith("cu::")) return cbCacheUploadChannel(cq, env, uid, data.split("::")[1]);
   if (data.startsWith("cd::")) return cbCacheDownload(cq, env, uid, data.split("::")[1]);
+  if (data.startsWith("cvp::")) { const [, ch, pg] = data.split("::"); return cbCacheViewPage(cq, env, uid, ch, Number(pg)); }
+  if (data.startsWith("cv::")) return cbCacheViewChannel(cq, env, uid, data.split("::")[1]);
   if (data.startsWith("cp::")) return cbCachePostChannel(cq, env, uid, data.split("::")[1]);
   if (data.startsWith("ce::")) return cbCacheEditChannel(cq, env, uid, data.split("::")[1]);
   if (data.startsWith("cxdel::")) return cbCacheDeleteConfirm(cq, env, uid, data);
@@ -1313,12 +1315,46 @@ async function cbCacheUploadDone(cq, env, uid, action) {
 }
 
 async function cacheBtnView(env, uid) {
-  const lines = [`<b>Cache Overview</b> (last 7 days)\n`];
+  const lines = [`<b>Key Overview</b>\n`];
   for (const name of Object.keys(CACHE_CHANNELS)) {
-    const stats = await cacheStub(env, name).getStats(name);
-    lines.push(`<b>${name}</b>\n  Pending: ${stats.total}\n  Posted (7d): ${stats.posted7}\n  Skipped (7d): ${stats.skipped7}\n`);
+    const items = await cacheStub(env, name).getAll(name);
+    lines.push(`${name} ${items.length} Key`);
   }
-  await sendMessage(env, uid, lines.join("\n"), cacheChannelKeyboard("cd", true));
+  await sendMessage(env, uid, lines.join("\n"), cacheChannelKeyboard("cv"));
+}
+
+const VIEW_PAGE_SIZE = 25;
+
+async function renderCacheViewPage(env, uid, channel, page, editMsg) {
+  const items = await cacheStub(env, channel).getAll(channel);
+  const total = items.length;
+  const maxPage = Math.max(1, Math.ceil(total / VIEW_PAGE_SIZE));
+  page = Math.min(Math.max(1, page), maxPage);
+  const start = (page - 1) * VIEW_PAGE_SIZE;
+  const slice = items.slice(start, start + VIEW_PAGE_SIZE);
+  const shown = start + slice.length;
+  const lines = [`<b>${channel}</b> — Keys\n`];
+  slice.forEach((it, i) => lines.push(`${start + i + 1}. ${escapeHtml(it.permalink)}`));
+  lines.push(``, `${shown}/${total}`);
+  const navRow = [];
+  if (page > 1) navRow.push({ text: `${getEmoji('back')} Prev`, callback_data: `cvp::${channel}::${page - 1}` });
+  if (page < maxPage) navRow.push({ text: `Next ${getEmoji('add')}`, callback_data: `cvp::${channel}::${page + 1}` });
+  const rows = [[{ text: `${getEmoji('download_data')} Download`, callback_data: `cd::${channel}` }]];
+  if (navRow.length) rows.push(navRow);
+  const markup = { inline_keyboard: rows };
+  const text = lines.join("\n");
+  if (editMsg) return editMessageText(env, editMsg.chat.id, editMsg.message_id, text, markup);
+  return sendMessage(env, uid, text, markup);
+}
+
+async function cbCacheViewChannel(cq, env, uid, channel) {
+  await answerCallback(env, cq.id);
+  await renderCacheViewPage(env, uid, channel, 1);
+}
+
+async function cbCacheViewPage(cq, env, uid, channel, page) {
+  await answerCallback(env, cq.id);
+  await renderCacheViewPage(env, uid, channel, page, cq.message);
 }
 
 async function cacheBtnDownloadMenu(env, uid) {
@@ -1526,15 +1562,18 @@ async function cacheReceiveDeletePermalink(msg, env, uid, session) {
     await sendMessage(env, uid, `No item found with Permalink "${permalink}" in ${channel}.`, movieCacheMenuKeyboard());
     return;
   }
-  await setSession(env, uid, {});
-  const markup = { inline_keyboard: [[{ text: `${getEmoji('cancel')} Cancel`, callback_data: `cxdel::no::${channel}::${permalink}` }, { text: `${getEmoji('trash')} Confirm Delete`, callback_data: `cxdel::yes::${channel}::${permalink}` }]] };
+  await setSession(env, uid, { cache_channel: channel, deleting_permalink: permalink });
+  const markup = { inline_keyboard: [[{ text: `${getEmoji('cancel')} Cancel`, callback_data: `cxdel::no` }, { text: `${getEmoji('trash')} Confirm Delete`, callback_data: `cxdel::yes` }]] };
   await sendMessage(env, uid, `Delete "<b>${escapeHtml(item.tg_title)}</b>" from ${channel}?`, markup);
 }
 
 async function cbCacheDeleteConfirm(cq, env, uid, data) {
   await answerCallback(env, cq.id);
-  const [, ans, channel, permalink] = data.split("::");
-  if (ans === "no") {
+  const ans = data.split("::")[1];
+  const session = await getSession(env, uid);
+  const { cache_channel: channel, deleting_permalink: permalink } = session;
+  await setSession(env, uid, {});
+  if (ans === "no" || !channel || !permalink) {
     await editMessageText(env, cq.message.chat.id, cq.message.message_id, `Cancelled.`);
     return;
   }
