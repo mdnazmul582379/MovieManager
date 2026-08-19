@@ -1333,9 +1333,8 @@ async function renderCacheViewPage(env, uid, channel, page, editMsg) {
   const start = (page - 1) * VIEW_PAGE_SIZE;
   const slice = items.slice(start, start + VIEW_PAGE_SIZE);
   const shown = start + slice.length;
-  const lines = [`<b>${channel}</b> — Keys\n`];
-  slice.forEach((it, i) => lines.push(`${start + i + 1}. ${escapeHtml(it.permalink)}`));
-  lines.push(``, `${shown}/${total}`);
+  const lines = [`<b>${channel}</b> — Keys ${shown}/${total}\n`];
+  slice.forEach((it, i) => lines.push(`${start + i + 1}. <code>${escapeHtml(it.permalink)}</code>`));
   const navRow = [];
   if (page > 1) navRow.push({ text: `${getEmoji('back')} Prev`, callback_data: `cvp::${channel}::${page - 1}` });
   if (page < maxPage) navRow.push({ text: `Next ${getEmoji('add')}`, callback_data: `cvp::${channel}::${page + 1}` });
