@@ -315,7 +315,7 @@ async function cmdHelp(env, uid) {
     `  Adult Movie - 11:00 PM, 1 post/day\n` +
     `  Viral Vids - 12:00 AM, 2 posts/day\n\n` +
     `<b>Post Movie - JSON format</b>\n<code>{\n  "TGTitle":         "Movie Name (2024)",\n  "BGTitle":         "Movie Name (2024) 1080p BluRay | Full Movie",\n  "Language":        "English / Hindi",\n  "Quality":         "1080p BluRay",\n  "Duration":        "2h 15m",\n  "Release_year":    "2024",\n  "BGThumbnail":     "https://.../poster.jpg",\n  "TGTitlehumbnail": "https://.../poster.jpg",\n  "Video_Url":       "https://.../video",\n  "Permalink":       "N/A",\n  "Labels":          "Adult,Drama,Erotic,ESubs,K-Movie,Korean,Romance",\n  "Synopsis":        "Short plot summary...",\n  "MovieId":         "movie_name_2024",\n  "links": [\n    { "text": "How To Download", "url": "https://t.me/backup2k24/72" }\n  ]\n}</code>\n\n` +
-    `<b>Permalink</b> = <code>N/A</code> -> auto-built from TGTitle + Release_year.\n<b>Synopsis</b> / <b>MovieId</b> are used for the second Blogger site (gallery + download page); MovieId falls back to Permalink if omitted.\n<b>MovieId auto-link:</b> if MovieId matches an existing Movie Data entry's "id", its "stream" field is automatically overwritten with the real Mov8kHub post URL right after publishing — safe to leave "stream" as N/A when adding the Movie Data entry first.\n\n<b>Porn TV</b>: use <code>"type": "porn"</code> + attach photo/video/gif with JSON as caption (tg_thumbnail N/A → uses attached media file_id). Publishes to <b>BLOG_ID_3</b>.\n\n<b>Long JSON / multiple posts:</b> upload a <b>.txt</b> or <b>.json</b> file instead of typing it (avoids Telegram's text length limit). A JSON <b>array</b> in the file/message adds multiple drafts at once.\n\n<b>Commands</b>\n  /start - Main menu.\n  /help  - This reference.\n  /cancel - Cancel current operation.\n`;
+    `<b>Permalink</b> = <code>N/A</code> -> auto-built from TGTitle + Release_year.\n<b>Synopsis</b> / <b>MovieId</b> are used for the second Blogger site (gallery + download page); MovieId falls back to Permalink if omitted.\n<b>MovieId auto-link:</b> if MovieId matches an existing Movie Data entry's "id", its "stream" field is automatically overwritten with the real Mov8kHub post URL right after publishing — safe to leave "stream" as N/A when adding the Movie Data entry first.\n<b>Long JSON / multiple posts:</b> upload a <b>.txt</b> or <b>.json</b> file instead of typing it (avoids Telegram's text length limit). A JSON <b>array</b> in the file/message adds multiple drafts at once.\n\n<b>Commands</b>\n  /start - Main menu.\n  /help  - This reference.\n  /cancel - Cancel current operation.\n`;
   const menu = await getMenu(env, uid);
   await sendMessage(env, uid, text, keyboardForMenu(menu));
 }
@@ -353,12 +353,12 @@ async function enterMovieCacheMenu(env, uid) {
 async function btnAddPost(env, uid) {
   await setSession(env, uid, { state: "composing" });
   const text =
-    `<b>Add a New Post</b>\n\nSend Movie JSON or Porn TV JSON.\nAttach photo/video/gif + put JSON as caption → uses that media as TG Thumbnail (even if tg_thumbnail is N/A).\nLong JSON? Send as .txt/.json file.\nArray = multiple drafts.\n\n` +
+    `<b>Add a New Post</b>\n\nSend Movie or Porn TV JSON.\nAttach <b>photo / video / GIF</b> + put JSON as caption → auto uses that media as TG Thumbnail (even if tg_thumbnail is N/A).\nLong JSON? Send as .txt/.json file.\n\n` +
     `<b>🎬 Movie Example:</b>\n<pre>{\n  "TGTitle": "Inception (2010)",\n  "BGTitle": "Inception (2010) 1080p BluRay | Full Movie",\n  "Language": "English",\n  "Quality": "1080p BluRay",\n  "Duration": "2h 28m",\n  "Release_year": "2010",\n  "BGThumbnail": "https://.../poster.jpg",\n  "TGTitlehumbnail": "https://.../poster.jpg",\n  "Video_Url": "https://.../video",\n  "Permalink": "N/A",\n  "Labels": "Adult,Drama,Erotic",\n  "Synopsis": "Short plot...",\n  "MovieId": "inception_2010",\n  "links": [{"text":"How To Download","url":"https://t.me/backup2k24/72"}]\n}</pre>\n\n` +
     `<b>🔥 Porn TV Example:</b>\n<pre>{\n  "type": "porn",\n  "id": "JannatTohaVideo",\n  "tg_title": "জান্নাত তোহা এর নতুন 3 মিনিট 21 সেকেন্ড এর ভিডিও টি সবাই দেখেছেন কি? না দেখে থাকলে এখনই দেখে নিন 😚🙈",\n  "bg_title": "[18+] Jannat Toha New Viral Video | Full 3 Min 25 Sec Clip - Porn TV",\n  "labels": "BanglaPorn,FB Viral,Instagram Viral,Trending Porn,Viral Porn,Viral Video",\n  "poster": "https://i.ibb.co.com/jk242r45/file-000000009a148211a3b44c2cac7d1a0a.png",\n  "tg_thumbnail": "N/A",\n  "duration": "7m 56s",\n  "tele": "https://t.me/TG_Downlad_bot?start=videofugQa",\n  "terabox": "https://1024terabox.com/s/1zEfnIJPrvlbOPo1_pk-c8w",\n  "screenshots": [\n    "https://i.ibb.co.com/b5LMK2TP/IMG-20260816-202110.jpg",\n    "https://i.ibb.co.com/Y4RVx9tZ/IMG-20260816-202054.jpg"\n  ]\n}</pre>`;
   await sendMessage(env, uid, text, postMovieMenuKeyboard());
 }
-function buildDraftPostFromJson(d, photoFileId) {
+function buildDraftPostFromJson(d, photoFileId, mediaType) {
   if (!d || typeof d !== "object") return null;
   const isPorn = d.type === "porn";
   if (!isPorn && !d["TGTitle"]) return null;
@@ -375,6 +375,7 @@ function buildDraftPostFromJson(d, photoFileId) {
       language: "N/A", quality: "N/A", duration: d.duration || "N/A", release_year: "N/A",
       bg_thumbnail: d.poster || "", tg_thumbnail: null, video_url: "",
       permalink: id, labels: d.labels || "", synopsis: "", movie_id: id, links,
+      media_type: mediaType || "photo",
       porn_id: id, porn_poster: d.poster || "", porn_tele: d.tele || "",
       porn_terabox: d.terabox || "", porn_screenshots: Array.isArray(d.screenshots) ? d.screenshots : [],
       porn_caption: d.caption || "",
@@ -390,7 +391,7 @@ function buildDraftPostFromJson(d, photoFileId) {
     language: d["Language"] || "N/A", quality: d["Quality"] || "N/A", duration: d["Duration"] || "N/A",
     release_year: d["Release_year"] || "N/A", bg_thumbnail: d["BGThumbnail"] || "", tg_thumbnail: null,
     video_url: d["Video_Url"] || "", permalink: d["Permalink"] || "N/A", labels: d["Labels"] || "",
-    synopsis: d["Synopsis"] || "", movie_id: d["MovieId"] || "", links,
+    synopsis: d["Synopsis"] || "", movie_id: d["MovieId"] || "", links, media_type: mediaType || "photo",
   };
   if (photoFileId) post.tg_thumbnail = photoFileId;
   else if (d["TGTitlehumbnail"]) post.tg_thumbnail = d["TGTitlehumbnail"];
@@ -398,28 +399,35 @@ function buildDraftPostFromJson(d, photoFileId) {
 }
 
 async function receivePost(msg, env, uid) {
-  // Extract media file_id (photo / video / gif)
+  // Extract media file_id + type (photo / video / gif-animation)
   let mediaFileId = null;
-  if (msg.photo) mediaFileId = msg.photo[msg.photo.length - 1].file_id;
-  else if (msg.video) mediaFileId = msg.video.file_id;
-  else if (msg.animation) mediaFileId = msg.animation.file_id;
+  let mediaType = "photo";
+  if (msg.photo) {
+    mediaFileId = msg.photo[msg.photo.length - 1].file_id;
+    mediaType = "photo";
+  } else if (msg.video) {
+    mediaFileId = msg.video.file_id;
+    mediaType = "video";
+  } else if (msg.animation) {
+    mediaFileId = msg.animation.file_id;
+    mediaType = "animation";
+  }
 
   const captionOrText = (msg.caption || msg.text || "").trim();
   const hasMovieJson = captionOrText.includes("TGTitle");
   const hasPornJson = captionOrText.includes('"type": "porn"') || captionOrText.includes('"type":"porn"');
 
-  // Pure media (no JSON caption) → just reply file_id
+  // Pure media without JSON → reply file_id
   if (mediaFileId && !hasMovieJson && !hasPornJson) {
     await sendMessage(
       env, uid,
-      `${getEmoji('photo')} <b>Media File ID</b>\n<code>${mediaFileId}</code>\n\nTap to copy, then paste into <code>tg_thumbnail</code> (or TGTitlehumbnail for movie) and send the JSON.`,
+      `${getEmoji('photo')} <b>Media File ID</b> (${mediaType})\n<code>${mediaFileId}</code>\n\nTap to copy, then put into tg_thumbnail / TGTitlehumbnail and send the JSON.`,
       postMovieMenuKeyboard()
     );
     return;
   }
 
   let raw = null;
-  let photoFileId = mediaFileId;
   if (msg.document && !msg.caption) {
     try {
       raw = await getTelegramFileText(env, msg.document.file_id);
@@ -430,10 +438,12 @@ async function receivePost(msg, env, uid) {
   } else {
     raw = captionOrText;
   }
+
   if (!raw || !raw.trim() || (!hasMovieJson && !hasPornJson)) {
-    await sendMessage(env, uid, `<b>Invalid input.</b>\n\nSend Movie JSON (with TGTitle) or Porn TV JSON (with type: "porn").\nYou can attach photo/video/gif + put JSON as caption.\nPress <b>Add Post</b> again to see examples.`, postMovieMenuKeyboard());
+    await sendMessage(env, uid, `<b>Invalid input.</b>\n\nSend Movie JSON (TGTitle) or Porn JSON (type: "porn").\nYou can attach photo / video / GIF + put JSON as caption.\nPress <b>Add Post</b> for examples.`, postMovieMenuKeyboard());
     return;
   }
+
   let data;
   try { data = JSON.parse(raw); }
   catch (exc) {
@@ -444,7 +454,7 @@ async function receivePost(msg, env, uid) {
   const drafts = await getDrafts(env, uid);
   let added = 0, invalid = 0, skippedLinksTotal = 0;
   for (const d of rawItems) {
-    const built = buildDraftPostFromJson(d, rawItems.length === 1 ? photoFileId : null);
+    const built = buildDraftPostFromJson(d, rawItems.length === 1 ? mediaFileId : null, rawItems.length === 1 ? mediaType : "photo");
     if (!built) { invalid++; continue; }
     drafts[built.post.post_id] = built.post;
     added++;
@@ -459,6 +469,7 @@ async function receivePost(msg, env, uid) {
   const lines = [added > 1 ? `<b>${added}</b> post(s) added from the file.` : `<b>Post added!</b>`];
   if (invalid > 0) lines.push(`${invalid} item(s) skipped - invalid structure.`);
   if (skippedLinksTotal > 0) lines.push(`${skippedLinksTotal} link(s) skipped - need a "text" and a valid http(s) "url".`);
+  if (mediaFileId) lines.push(`Media (${mediaType}) file_id saved as thumbnail.`);
   lines.push(`You now have <b>${count}</b> draft(s).`);
   await sendMessage(env, uid, lines.join("\n") + `\n\nSend another post, press <b>Preview</b>, or <b>Send Post</b>.`, postMovieMenuKeyboard());
 }
@@ -1170,7 +1181,7 @@ async function uploadJsonToCache(msg, env, uid, session) {
     await sendMessage(
       env,
       uid,
-      `No valid items found. Movie needs TGTitle, Porn needs type: "porn" + id.`,
+      `No valid items found. Every item must contain <code>TGTitle</code>.`,
       movieCacheMenuKeyboard()
     );
     return;
@@ -1750,8 +1761,8 @@ function buildBloggerHtmlV2(post) {
 }
 
 function buildPornBloggerHtml(post) {
-  const poster = post.porn_poster || post.bg_thumbnail || post.tg_thumbnail || "";
-  const id = post.porn_id || post.permalink || post.movie_id || "";
+  const poster = post.porn_poster || post.bg_thumbnail || "";
+  const id = post.porn_id || post.permalink || "";
   return (
     `<div class="bottom-container" style="clear: both;">\n` +
     `  <a href="${escapeHtml(poster)}" style="display: block; padding:0; text-align: center;">\n` +
@@ -1857,93 +1868,70 @@ async function uploadPornDataToMovieStore(env, post) {
   if (!post.is_porn || !post.porn_id) return;
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
   const movieData = {
-    id: post.porn_id,
-    title: post.tg_title || post.bg_title || "",
+    id: post.porn_id, title: post.tg_title || post.bg_title || "",
     poster: post.porn_poster || post.bg_thumbnail || "",
-    tele: post.porn_tele || "",
-    terabox: post.porn_terabox || "",
+    tele: post.porn_tele || "", terabox: post.porn_terabox || "",
     screenshots: post.porn_screenshots || [],
   };
   await stub.put(post.porn_id, movieData);
   try {
     const cacheKey = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(post.porn_id)}`);
-    const res = new Response(JSON.stringify(movieData), {
-      headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" },
-    });
+    const res = new Response(JSON.stringify(movieData), { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" } });
     await caches.default.put(cacheKey, res);
-  } catch (e) {
-    console.error("Porn data cache warm failed:", e);
-  }
+  } catch (e) { console.error("Porn cache warm failed:", e); }
 }
 
 async function publishToBloggerPorn(env, post) {
-  if (!env.BLOG_ID_3) throw new Error("BLOG_ID_3 is not set in wrangler vars");
+  if (!env.BLOG_ID_3) throw new Error("BLOG_ID_3 is not set");
   const accessToken = await getBloggerAccessToken(env);
   const slug = post.porn_id || resolvePermalink(post);
   const bloggerTitle = post.bg_title || post.tg_title || "Untitled";
   const contentHtml = buildPornBloggerHtml(post);
-  const labels = (post.labels || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const labels = (post.labels || "").split(",").map(s => s.trim()).filter(Boolean);
   const createBody = { kind: "blogger#post", title: slug, content: contentHtml };
   if (labels.length) createBody.labels = labels;
-  const createRes = await fetch(
-    `https://www.googleapis.com/blogger/v3/blogs/${env.BLOG_ID_3}/posts/`,
-    { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(createBody) }
-  );
+  const createRes = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${env.BLOG_ID_3}/posts/`, {
+    method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(createBody)
+  });
   const created = await createRes.json();
-  if (!createRes.ok) throw new Error("Porn Blogger (BLOG_ID_3) create failed: " + JSON.stringify(created));
-  const patchRes = await fetch(
-    `https://www.googleapis.com/blogger/v3/blogs/${env.BLOG_ID_3}/posts/${created.id}`,
-    { method: "PATCH", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ title: bloggerTitle }) }
-  );
+  if (!createRes.ok) throw new Error("Porn Blogger create failed: " + JSON.stringify(created));
+  const patchRes = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${env.BLOG_ID_3}/posts/${created.id}`, {
+    method: "PATCH", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ title: bloggerTitle })
+  });
   const patched = await patchRes.json();
-  if (!patchRes.ok) throw new Error("Porn Blogger (BLOG_ID_3) title update failed: " + JSON.stringify(patched));
+  if (!patchRes.ok) throw new Error("Porn Blogger title update failed: " + JSON.stringify(patched));
   return patched;
 }
 
 async function publishPost(env, destination, chId, post) {
   if (post.is_porn) {
     let blogUrl = null;
-    try {
-      await uploadPornDataToMovieStore(env, post);
-    } catch (exc) {
-      throw new Error(`Porn Data upload to Movie Store failed: ${exc.message || exc}`);
-    }
+    try { await uploadPornDataToMovieStore(env, post); }
+    catch (exc) { throw new Error(`Porn Data upload failed: ${exc.message || exp}`); }
     if (destination !== "telegram") {
       try {
         const blogged = await publishToBloggerPorn(env, post);
         blogUrl = blogged.url;
-      } catch (exc) {
-        throw new Error(`Porn Blogger (BLOG_ID_3) publish failed: ${exc.message || exc}`);
-      }
+      } catch (exc) { throw new Error(`Porn Blogger (BLOG_ID_3) failed: ${exc.message || exc}`); }
     }
     if (destination !== "blogger") {
       try {
-        if (blogUrl && destination === "both") {
-          post.links = [...(post.links || []), { text: "Download", url: blogUrl }];
-        }
+        if (blogUrl && destination === "both") post.links = [...(post.links || []), { text: "Download", url: blogUrl }];
         const markup = post.links && post.links.length ? { inline_keyboard: linkRows(post.links) } : undefined;
         await sendPostMessage(env, chId, post, markup);
-      } catch (exc) {
-        throw new Error(`Porn Telegram post failed: ${exc.message || exc}`);
-      }
+      } catch (exc) { throw new Error(`Porn Telegram post failed: ${exc.message || exc}`); }
     }
     return blogUrl;
   }
-
-  // ORIGINAL MOVIE FLOW — UNCHANGED
-  let blogUrl = null;
-  let blogUrl2 = null;
+  // ORIGINAL MOVIE
+  let blogUrl = null, blogUrl2 = null;
   if (destination !== "telegram") {
     const blogged = await publishToBlogger(env, post);
     blogUrl = blogged.url;
     await syncStreamUrlToMovieData(env, post, blogUrl);
     if (env.BLOG_ID_2) {
-      try {
-        const blogged2 = await publishToBloggerV2(env, post);
-        blogUrl2 = blogged2.url;
-      } catch (exc) {
-        console.error("Blog ID 2 publish failed:", exc);
-      }
+      try { const blogged2 = await publishToBloggerV2(env, post); blogUrl2 = blogged2.url; }
+      catch (exc) { console.error("Blog ID 2 publish failed:", exc); }
     }
   }
   if (destination !== "blogger") {
@@ -2179,10 +2167,21 @@ async function safeDelete(env, chatId, msgId) { if (msgId) await deleteMessage(e
 async function sendPostMessage(env, chatId, post, markup, isPreview = false) {
   const caption = formatPost(post, { note: isPreview });
   if (post.tg_thumbnail) {
+    const mtype = post.media_type || "photo";
     try {
+      if (mtype === "animation") {
+        return await tg(env, "sendAnimation", { chat_id: chatId, animation: post.tg_thumbnail, caption, parse_mode: "HTML", reply_markup: markup });
+      }
+      if (mtype === "video") {
+        return await sendVideo(env, chatId, post.tg_thumbnail, caption, markup);
+      }
       return await sendPhoto(env, chatId, post.tg_thumbnail, caption, markup);
     } catch (exc) {
-      console.error("sendPhoto failed, falling back to text message:", exc);
+      console.error("send media failed, trying fallbacks:", exc);
+      // fallbacks
+      try { return await sendPhoto(env, chatId, post.tg_thumbnail, caption, markup); } catch(e){}
+      try { return await tg(env, "sendAnimation", { chat_id: chatId, animation: post.tg_thumbnail, caption, parse_mode: "HTML", reply_markup: markup }); } catch(e){}
+      try { return await sendVideo(env, chatId, post.tg_thumbnail, caption, markup); } catch(e){}
     }
   }
   return sendMessage(env, chatId, caption, markup);
