@@ -252,6 +252,7 @@ export async function handlePostUpdate(update, env) {
   if (session.state === "cache_post_wait_permalink") return cacheReceivePostPermalink(msg, env, uid, session);
   if (session.state === "cache_preview_edit_field") return cachePreviewReceiveEditedField(msg, env, uid, session);
   if (session.state === "cache_edit_wait_permalink") return cacheReceiveEditPermalink(msg, env, uid, session);
+  if (session.state === "cache_edit_wait_json") return cacheReceiveEditJson(msg, env, uid, session);
   if (session.state === "cache_edit_field") return cacheReceiveEditedField(msg, env, uid, session);
   if (session.state === "cache_delete_wait_permalink") return cacheReceiveDeletePermalink(msg, env, uid, session);
   if (session.state === "live_edit") {
@@ -1507,14 +1508,118 @@ async function cbCacheEditChannel(cq, env, uid, channel) {
 
 async function cacheReceiveEditPermalink(msg, env, uid, session) {
   const channel = session.cache_channel;
-  const permalink = (msg.text || "").trim();
-  const item = await cacheStub(env, channel).getItem(channel, permalink);
-  if (!item) {
-    await sendMessage(env, uid, `No item found with Permalink "${permalink}" in ${channel}.`, movieCacheMenuKeyboard());
+  const text = (msg.text || "").trim();
+  if (text.toLowerCase() === "cancel" || text === "Back") {
+    await clearSession(env, uid);
+    await sendMessage(env, uid, `Edit cancelled.`, movieCacheMenuKeyboard());
     return;
   }
-  await setSession(env, uid, { cache_channel: channel, editing_permalink: permalink });
-  await sendMessage(env, uid, `Editing "<b>${escapeHtml(item.tg_title)}</b>"\nSelect the field to change:`, cacheEditFieldKeyboard());
+  const permalink = text;
+  const item = await cacheStub(env, channel).getItem(channel, permalink);
+  if (!item) {
+    await sendMessage(env, uid, `No item found with Permalink/ID <code>${escapeHtml(permalink)}</code> in <b>${channel}</b>.`, movieCacheMenuKeyboard());
+    return;
+  }
+
+  // Preview media if tg_thumbnail exists
+  if (item.tg_thumbnail) {
+    try {
+      await sendPhoto(env, uid, item.tg_thumbnail, `Thumbnail — <code>${escapeHtml(permalink)}</code>`, movieCacheMenuKeyboard());
+    } catch (e1) {
+      try {
+        await tg(env, "sendAnimation", { chat_id: uid, animation: item.tg_thumbnail, caption: `Thumbnail — <code>${escapeHtml(permalink)}</code>`, parse_mode: "HTML" });
+      } catch (e2) {
+        try {
+          await sendVideo(env, uid, item.tg_thumbnail, `Thumbnail — <code>${escapeHtml(permalink)}</code>`, movieCacheMenuKeyboard());
+        } catch (e3) {
+          console.error("cache edit media preview failed:", e3);
+        }
+      }
+    }
+  }
+
+  // Strip internal timing fields for cleaner edit JSON
+  const editable = { ...item };
+  delete editable.added_at;
+  delete editable.next_auto_at;
+  delete editable.posted_at;
+
+  const jsonStr = JSON.stringify(editable, null, 2);
+  await setSession(env, uid, {
+    state: "cache_edit_wait_json",
+    cache_channel: channel,
+    editing_permalink: permalink,
+    original_json: jsonStr,
+  });
+  await sendMessage(
+    env, uid,
+    `Current data for <code>${escapeHtml(permalink)}</code> in <b>${channel}</b>:\n\n<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
+    `Send the <b>updated JSON</b> (keep the same <code>permalink</code>).\n` +
+    `To change thumbnail: put a file_id/URL in <code>tg_thumbnail</code>, OR attach a photo/video/GIF with the JSON as caption.\n` +
+    `Send <code>Cancel</code> to abort.`,
+    movieCacheMenuKeyboard()
+  );
+}
+
+async function cacheReceiveEditJson(msg, env, uid, session) {
+  const channel = session.cache_channel;
+  const permalink = session.editing_permalink;
+  const originalJson = session.original_json || "";
+  const text = (msg.caption || msg.text || "").trim();
+
+  if (text.toLowerCase() === "cancel" || text === "Back") {
+    await clearSession(env, uid);
+    await sendMessage(env, uid, `Edit cancelled.`, movieCacheMenuKeyboard());
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (exc) {
+    await sendMessage(env, uid, `<b>JSON Error</b>\n<code>${exc.message}</code>\n\nFix and resend the full JSON, or send Cancel.`, movieCacheMenuKeyboard());
+    return;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    await sendMessage(env, uid, `Send a single JSON <b>object</b> (not an array).`, movieCacheMenuKeyboard());
+    return;
+  }
+
+  // Force same permalink
+  data.permalink = permalink;
+
+  // Media attachment overrides tg_thumbnail
+  if (msg.photo) {
+    data.tg_thumbnail = msg.photo[msg.photo.length - 1].file_id;
+    data.media_type = "photo";
+  } else if (msg.video) {
+    data.tg_thumbnail = msg.video.file_id;
+    data.media_type = "video";
+  } else if (msg.animation) {
+    data.tg_thumbnail = msg.animation.file_id;
+    data.media_type = "animation";
+  }
+
+  // Compare with original (normalized) — if identical, skip save
+  const normalizedNew = JSON.stringify(data, Object.keys(data).sort());
+  let originalObj = {};
+  try { originalObj = JSON.parse(originalJson); } catch (_) {}
+  originalObj.permalink = permalink;
+  const normalizedOld = JSON.stringify(originalObj, Object.keys(originalObj).sort());
+
+  if (normalizedNew === normalizedOld && !msg.photo && !msg.video && !msg.animation) {
+    await clearSession(env, uid);
+    await sendMessage(env, uid, `No changes detected. Cache item was not updated.`, movieCacheMenuKeyboard());
+    return;
+  }
+
+  const result = await cacheStub(env, channel).updateItems(channel, [data]);
+  await clearSession(env, uid);
+  if (!result || !result.updated) {
+    await sendMessage(env, uid, `Update failed — item may no longer exist in cache.`, movieCacheMenuKeyboard());
+    return;
+  }
+  await sendMessage(env, uid, `✅ Updated <code>${escapeHtml(permalink)}</code> in <b>${channel}</b> successfully.`, movieCacheMenuKeyboard());
 }
 
 async function cbCacheEditField(cq, env, uid, data) {
@@ -1846,21 +1951,8 @@ async function syncStreamUrlToMovieData(env, post, realUrl) {
 async function uploadPornDataToMovieStore(env, post) {
   if (!post.is_porn || !post.porn_id) return;
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const movieData = {
-    id: post.porn_id,
-    title: post.tg_title || post.bg_title || "",
-    poster: post.porn_poster || post.bg_thumbnail || "",
-    tele: post.porn_tele || "",
-    terabox: post.porn_terabox || "",
-    screenshots: post.porn_screenshots || [],
-    language: post.language || "",
-    quality: post.quality || "",
-    leaked: post.leaked || "",
-    duration: post.duration || "",
-    type: "porn",
-  };
-  // Always save porn/type posts into the Leaked store
-  await stub.put(post.porn_id, movieData, "leaked");
+  const movieData = { id: post.porn_id, title: post.tg_title || post.bg_title || "", poster: post.porn_poster || post.bg_thumbnail || "", tele: post.porn_tele || "", terabox: post.porn_terabox || "", screenshots: post.porn_screenshots || [] };
+  await stub.put(post.porn_id, movieData);
   try {
     const cacheKey = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(post.porn_id)}`);
     await caches.default.put(cacheKey, new Response(JSON.stringify(movieData), { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" } }));
