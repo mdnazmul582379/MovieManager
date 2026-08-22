@@ -1521,24 +1521,6 @@ async function cacheReceiveEditPermalink(msg, env, uid, session) {
     return;
   }
 
-  // Preview media if tg_thumbnail exists
-  if (item.tg_thumbnail) {
-    try {
-      await sendPhoto(env, uid, item.tg_thumbnail, `Thumbnail — <code>${escapeHtml(permalink)}</code>`, movieCacheMenuKeyboard());
-    } catch (e1) {
-      try {
-        await tg(env, "sendAnimation", { chat_id: uid, animation: item.tg_thumbnail, caption: `Thumbnail — <code>${escapeHtml(permalink)}</code>`, parse_mode: "HTML" });
-      } catch (e2) {
-        try {
-          await sendVideo(env, uid, item.tg_thumbnail, `Thumbnail — <code>${escapeHtml(permalink)}</code>`, movieCacheMenuKeyboard());
-        } catch (e3) {
-          console.error("cache edit media preview failed:", e3);
-        }
-      }
-    }
-  }
-
-  // Strip internal timing fields for cleaner edit JSON
   const editable = { ...item };
   delete editable.added_at;
   delete editable.next_auto_at;
@@ -1551,14 +1533,33 @@ async function cacheReceiveEditPermalink(msg, env, uid, session) {
     editing_permalink: permalink,
     original_json: jsonStr,
   });
-  await sendMessage(
-    env, uid,
-    `Current data for <code>${escapeHtml(permalink)}</code> in <b>${channel}</b>:\n\n<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
+
+  // ONE single message: try media+caption, else text only
+  const header =
+    `Current data for <code>${escapeHtml(permalink)}</code> in <b>${channel}</b>:\n\n` +
+    `<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
     `Send the <b>updated JSON</b> (keep the same <code>permalink</code>).\n` +
-    `To change thumbnail: put a file_id/URL in <code>tg_thumbnail</code>, OR attach a photo/video/GIF with the JSON as caption.\n` +
-    `Send <code>Cancel</code> to abort.`,
-    movieCacheMenuKeyboard()
-  );
+    `To change thumbnail: put file_id/URL in <code>tg_thumbnail</code>, OR attach photo/video/GIF with JSON as caption.\n` +
+    `Send <code>Cancel</code> to abort.`;
+
+  if (item.tg_thumbnail && header.length <= 1024) {
+    const mtype = item.media_type || "photo";
+    try {
+      if (mtype === "animation") {
+        await tg(env, "sendAnimation", { chat_id: uid, animation: item.tg_thumbnail, caption: header, parse_mode: "HTML", reply_markup: movieCacheMenuKeyboard() });
+        return;
+      }
+      if (mtype === "video") {
+        await sendVideo(env, uid, item.tg_thumbnail, header, movieCacheMenuKeyboard());
+        return;
+      }
+      await sendPhoto(env, uid, item.tg_thumbnail, header, movieCacheMenuKeyboard());
+      return;
+    } catch (e) {
+      console.error("cache edit media+json failed:", e);
+    }
+  }
+  await sendMessage(env, uid, header, movieCacheMenuKeyboard());
 }
 
 async function cacheReceiveEditJson(msg, env, uid, session) {
@@ -1577,18 +1578,16 @@ async function cacheReceiveEditJson(msg, env, uid, session) {
   try {
     data = JSON.parse(text);
   } catch (exc) {
-    await sendMessage(env, uid, `<b>JSON Error</b>\n<code>${exc.message}</code>\n\nFix and resend the full JSON, or send Cancel.`, movieCacheMenuKeyboard());
+    await sendMessage(env, uid, `<b>JSON Error</b>\n<code>${exc.message}</code>\n\nFix and resend, or Cancel.`, movieCacheMenuKeyboard());
     return;
   }
   if (!data || typeof data !== "object" || Array.isArray(data)) {
-    await sendMessage(env, uid, `Send a single JSON <b>object</b> (not an array).`, movieCacheMenuKeyboard());
+    await sendMessage(env, uid, `Send a single JSON object (not an array).`, movieCacheMenuKeyboard());
     return;
   }
 
-  // Force same permalink
   data.permalink = permalink;
 
-  // Media attachment overrides tg_thumbnail
   if (msg.photo) {
     data.tg_thumbnail = msg.photo[msg.photo.length - 1].file_id;
     data.media_type = "photo";
@@ -1600,14 +1599,13 @@ async function cacheReceiveEditJson(msg, env, uid, session) {
     data.media_type = "animation";
   }
 
-  // Compare with original (normalized) — if identical, skip save
-  const normalizedNew = JSON.stringify(data, Object.keys(data).sort());
+  // No-change detection
+  const sortKeys = (o) => JSON.stringify(o, Object.keys(o).sort());
   let originalObj = {};
   try { originalObj = JSON.parse(originalJson); } catch (_) {}
   originalObj.permalink = permalink;
-  const normalizedOld = JSON.stringify(originalObj, Object.keys(originalObj).sort());
-
-  if (normalizedNew === normalizedOld && !msg.photo && !msg.video && !msg.animation) {
+  const hasMediaAttach = !!(msg.photo || msg.video || msg.animation);
+  if (!hasMediaAttach && sortKeys(data) === sortKeys(originalObj)) {
     await clearSession(env, uid);
     await sendMessage(env, uid, `No changes detected. Cache item was not updated.`, movieCacheMenuKeyboard());
     return;
