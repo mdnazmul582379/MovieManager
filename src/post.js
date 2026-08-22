@@ -353,9 +353,9 @@ async function enterMovieCacheMenu(env, uid) {
 async function btnAddPost(env, uid) {
   await setSession(env, uid, { state: "composing" });
   const text =
-    `<b>Add a New Post</b>\n\nMovie or Porn TV JSON.\nAttach photo/video/GIF + JSON caption → auto thumbnail.\nHow To Download button is always auto-added (no need in JSON).\n\n` +
-    `<b>🎬 Movie:</b>\n<pre>{\n  "TGTitle": "Inception (2010)",\n  "BGTitle": "Inception (2010) 1080p...",\n  "Language": "English",\n  "Quality": "1080p",\n  "Duration": "2h 28m",\n  "Release_year": "2010",\n  "BGThumbnail": "https://...",\n  "TGTitlehumbnail": "https://...",\n  "Video_Url": "https://...",\n  "Permalink": "N/A",\n  "Labels": "Adult,Drama",\n  "Synopsis": "...",\n  "MovieId": "inception_2010"\n}</pre>\n\n` +
-    `<b>🔥 Porn TV:</b>\n<pre>{\n  "type": "porn",\n  "id": "JannatTohaVideo",\n  "tg_title": "জান্নাত তোহা এর নতুন ভিডিও...",\n  "bg_title": "[18+] Jannat Toha New Viral Video - Porn TV",\n  "labels": "BanglaPorn,FB Viral,Viral Video",\n  "poster": "https://i.ibb.co.com/...",\n  "tg_thumbnail": "N/A",\n  "duration": "7m 56s",\n  "tele": "https://t.me/...",\n  "terabox": "https://...",\n  "screenshots": ["https://..."]\n}</pre>`;
+    `<b>Add a New Post</b>\n\nMovie or Porn TV JSON.\nAttach photo/video/GIF + JSON caption → auto thumbnail.\nHow To Download auto-added.\n\n` +
+    `<b>🎬 Movie:</b>\n<pre>{\n  "TGTitle": "Inception (2010)",\n  "BGTitle": "Inception (2010) 1080p BluRay | Full Movie",\n  "Language": "English",\n  "Quality": "1080p BluRay",\n  "Duration": "2h 28m",\n  "Release_year": "2010",\n  "BGThumbnail": "https://...",\n  "TGTitlehumbnail": "https://...",\n  "Video_Url": "https://...",\n  "Permalink": "N/A",\n  "Labels": "Adult,Drama",\n  "Synopsis": "...",\n  "MovieId": "inception_2010"\n}</pre>\n\n` +
+    `<b>🔥 Porn TV:</b>\n<pre>{\n  "type": "porn",\n  "id": "JannatTohaVideo",\n  "tg_title": "জান্নাত তোহা এর নতুন 3 মিনিট 21 সেকেন্ড এর ভিডিও টি সবাই দেখেছেন কি? না দেখে থাকলে এখনই দেখে নিন 😚🙈",\n  "bg_title": "[18+] Jannat Toha New Viral Video | Full 3 Min 25 Sec Clip - Porn TV",\n  "language": "Bangla",\n  "quality": "720p",\n  "leaked": "2023",\n  "duration": "7m 56s",\n  "labels": "BanglaPorn,FB Viral,Instagram Viral,Trending Porn,Viral Porn,Viral Video",\n  "poster": "https://i.ibb.co.com/jk242r45/file-000000009a148211a3b44c2cac7d1a0a.png",\n  "tg_thumbnail": "N/A",\n  "tele": "https://t.me/TG_Downlad_bot?start=videofugQa",\n  "terabox": "https://1024terabox.com/s/1zEfnIJPrvlbOPo1_pk-c8w",\n  "screenshots": ["https://i.ibb.co.com/b5LMK2TP/IMG-20260816-202110.jpg"]\n}</pre>`;
   await sendMessage(env, uid, text, postMovieMenuKeyboard());
 }
 function buildDraftPostFromJson(d, photoFileId, mediaType) {
@@ -372,7 +372,11 @@ function buildDraftPostFromJson(d, photoFileId, mediaType) {
     const post = {
       post_id: postId, preview_msg_id: null, is_porn: true,
       tg_title: title, bg_title: d.bg_title || title,
-      language: "N/A", quality: "N/A", duration: d.duration || "N/A", release_year: "N/A",
+      language: d.language || d.Language || "N/A",
+      quality: d.quality || d.Quality || "N/A",
+      leaked: d.leaked || d.Leaked || "N/A",
+      duration: d.duration || d.Duration || "N/A",
+      release_year: "N/A",
       bg_thumbnail: d.poster || "", tg_thumbnail: null, video_url: "",
       permalink: id, labels: d.labels || "", synopsis: "", movie_id: id, links,
       media_type: mediaType || "photo",
@@ -409,7 +413,7 @@ async function receivePost(msg, env, uid) {
   const hasPornJson = captionOrText.includes('"type": "porn"') || captionOrText.includes('"type":"porn"');
 
   if (mediaFileId && !hasMovieJson && !hasPornJson) {
-    await sendMessage(env, uid, `${getEmoji('photo')} <b>Media File ID</b> (${mediaType})\n<code>${mediaFileId}</code>\n\nCopy into tg_thumbnail / TGTitlehumbnail.`, postMovieMenuKeyboard());
+    await sendMessage(env, uid, `${getEmoji('photo')} <b>Media File ID</b> (${mediaType})\n<code>${mediaFileId}</code>`, postMovieMenuKeyboard());
     return;
   }
 
@@ -420,19 +424,17 @@ async function receivePost(msg, env, uid) {
       await sendMessage(env, uid, `<b>File read error:</b>\n<code>${exc.message}</code>`, postMovieMenuKeyboard());
       return;
     }
-  } else {
-    raw = captionOrText;
-  }
+  } else raw = captionOrText;
 
   if (!raw || !raw.trim() || (!hasMovieJson && !hasPornJson)) {
-    await sendMessage(env, uid, `<b>Invalid input.</b>\n\nMovie JSON needs TGTitle, Porn needs type: "porn".\nAttach photo/video/GIF + JSON as caption works.`, postMovieMenuKeyboard());
+    await sendMessage(env, uid, `<b>Invalid input.</b>\nMovie needs TGTitle, Porn needs type: "porn". Attach media + JSON caption OK.`, postMovieMenuKeyboard());
     return;
   }
 
   let data;
   try { data = JSON.parse(raw); }
   catch (exc) {
-    await sendMessage(env, uid, `<b>JSON Error</b>\n\n<code>${exc.message}</code>`, postMovieMenuKeyboard());
+    await sendMessage(env, uid, `<b>JSON Error</b>\n<code>${exc.message}</code>`, postMovieMenuKeyboard());
     return;
   }
   const rawItems = Array.isArray(data) ? data : [data];
@@ -446,14 +448,13 @@ async function receivePost(msg, env, uid) {
     skippedLinksTotal += built.skippedLinks;
   }
   if (!added) {
-    await sendMessage(env, uid, `No valid items. Movie needs TGTitle, Porn needs type: "porn" + id.`, postMovieMenuKeyboard());
+    await sendMessage(env, uid, `No valid items. Movie: TGTitle | Porn: type "porn" + id.`, postMovieMenuKeyboard());
     return;
   }
   await setDrafts(env, uid, drafts);
   const count = Object.keys(drafts).length;
   const lines = [added > 1 ? `<b>${added}</b> post(s) added.` : `<b>Post added!</b>`];
   if (invalid) lines.push(`${invalid} skipped.`);
-  if (skippedLinksTotal) lines.push(`${skippedLinksTotal} bad links skipped.`);
   if (mediaFileId) lines.push(`Media (${mediaType}) saved as thumbnail.`);
   lines.push(`You now have <b>${count}</b> draft(s).`);
   await sendMessage(env, uid, lines.join("\n") + `\n\nPress <b>Preview</b> or <b>Send Post</b>.`, postMovieMenuKeyboard());
@@ -1872,7 +1873,6 @@ async function publishToBloggerPorn(env, post) {
 }
 
 async function publishPost(env, destination, chId, post) {
-  // Always start with How To Download
   post.links = ensureHowToDownload(post.links);
 
   if (post.is_porn) {
@@ -1887,12 +1887,7 @@ async function publishPost(env, destination, chId, post) {
     }
     if (destination !== "blogger") {
       try {
-        if (blogUrl && (destination === "both" || destination === "telegram")) {
-          // Download button only when we have blog url (both)
-          if (destination === "both" && blogUrl) {
-            post.links = [...post.links, { text: "Download", url: blogUrl }];
-          }
-        }
+        if (destination === "both" && blogUrl) post.links = [...post.links, { text: "Download", url: blogUrl }];
         const markup = post.links && post.links.length ? { inline_keyboard: linkRows(post.links) } : undefined;
         await sendPostMessage(env, chId, post, markup);
       } catch (exc) { throw new Error(`Porn Telegram failed: ${exc.message || exc}`); }
@@ -1900,7 +1895,6 @@ async function publishPost(env, destination, chId, post) {
     return blogUrl;
   }
 
-  // ORIGINAL MOVIE
   let blogUrl = null, blogUrl2 = null;
   if (destination !== "telegram") {
     const blogged = await publishToBlogger(env, post);
@@ -1928,13 +1922,29 @@ function formatPost(p, opts = {}) {
       cap += `\n\n🖥 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 🚀`;
       return cap;
     }
-    return [`🎤 <b>${escapeHtml(p.tg_title || "Untitled")}</b>`, ``, `🕐 Duration :  ${escapeHtml(p.duration || "N/A")}`, ``, `🖥 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 🚀`].join("\n");
+    // Professional porn format
+    const lines = [`🔥 <b>${escapeHtml(p.tg_title || "Untitled")}</b>\n`];
+    const fields = [
+      [`${getEmoji('language')} Language`, p.language],
+      [`${getEmoji('quality')} Quality`, p.quality],
+      [`🔥 Leaked`, p.leaked],
+      [`${getEmoji('time')} Duration`, p.duration],
+    ];
+    for (const [label, val] of fields) if (val && val !== "N/A") lines.push(`<b>${label} :</b>  ${escapeHtml(val)}`);
+    lines.push(`\n🖥 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 🚀`);
+    return lines.join("\n");
   }
+  // Movie - use movie icon
   const lines = [`${getEmoji('movie')} <b>${escapeHtml(p.tg_title || "Untitled")}</b>\n`];
-  const fields = [[`${getEmoji('language')} Language`, p.language], [`${getEmoji('quality')} Movie Quality`, p.quality], [`${getEmoji('time')} Duration`, p.duration], [`${getEmoji('release')} Movie Release`, p.release_year]];
+  const fields = [
+    [`${getEmoji('language')} Language`, p.language],
+    [`${getEmoji('quality')} Movie Quality`, p.quality],
+    [`${getEmoji('time')} Duration`, p.duration],
+    [`${getEmoji('release')} Movie Release`, p.release_year],
+  ];
   for (const [label, val] of fields) if (val && val !== "N/A") lines.push(`<b>${label} :</b>  ${escapeHtml(val)}`);
   lines.push(`\n${getEmoji('watch')} 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 ${getEmoji('download')}`);
-  if (opts.note) lines.push(`\n${getEmoji('info')} <i>Note: Download button auto-added when publishing to Both. How To Download is always auto-added.</i>`);
+  if (opts.note) lines.push(`\n${getEmoji('info')} <i>Note: Download button auto-added on Both. How To Download always auto-added.</i>`);
   return lines.join("\n");
 }
 
@@ -2128,17 +2138,13 @@ async function safeDelete(env, chatId, msgId) { if (msgId) await deleteMessage(e
 function ensureHowToDownload(links) {
   const HOW_TO = { text: "How To Download", url: "https://t.me/backup2k24/70" };
   const arr = Array.isArray(links) ? [...links] : [];
-  // remove any existing How To Download so we don't duplicate
-  const filtered = arr.filter(l => !(l && l.text && l.text.toLowerCase().includes("how to download")));
+  const filtered = arr.filter(l => !(l && l.text && String(l.text).toLowerCase().includes("how to download")));
   return [HOW_TO, ...filtered];
 }
 
 async function sendPostMessage(env, chatId, post, markup, isPreview = false) {
   const caption = formatPost(post, { note: isPreview });
-  // always ensure How To Download is present for telegram posts
-  if (!isPreview) {
-    post.links = ensureHowToDownload(post.links);
-  }
+  if (!isPreview) post.links = ensureHowToDownload(post.links);
   if (post.tg_thumbnail) {
     const mtype = post.media_type || "photo";
     try {
