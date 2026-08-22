@@ -1846,8 +1846,21 @@ async function syncStreamUrlToMovieData(env, post, realUrl) {
 async function uploadPornDataToMovieStore(env, post) {
   if (!post.is_porn || !post.porn_id) return;
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const movieData = { id: post.porn_id, title: post.tg_title || post.bg_title || "", poster: post.porn_poster || post.bg_thumbnail || "", tele: post.porn_tele || "", terabox: post.porn_terabox || "", screenshots: post.porn_screenshots || [] };
-  await stub.put(post.porn_id, movieData);
+  const movieData = {
+    id: post.porn_id,
+    title: post.tg_title || post.bg_title || "",
+    poster: post.porn_poster || post.bg_thumbnail || "",
+    tele: post.porn_tele || "",
+    terabox: post.porn_terabox || "",
+    screenshots: post.porn_screenshots || [],
+    language: post.language || "",
+    quality: post.quality || "",
+    leaked: post.leaked || "",
+    duration: post.duration || "",
+    type: "porn",
+  };
+  // Always save porn/type posts into the Leaked store
+  await stub.put(post.porn_id, movieData, "leaked");
   try {
     const cacheKey = new Request(`https://cache.internal/get-movie?id=${encodeURIComponent(post.porn_id)}`);
     await caches.default.put(cacheKey, new Response(JSON.stringify(movieData), { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=600" } }));

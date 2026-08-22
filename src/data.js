@@ -55,6 +55,9 @@ function moviesMenuKeyboard() {
 function backOnlyKeyboard() {
   return { keyboard: [[{ text: "⬅️ Back" }]], resize_keyboard: true, one_time_keyboard: false };
 }
+function kindKeyboard() {
+  return { keyboard: [[{ text: "🎬 Movie" }, { text: "🔥 Leaked" }], [{ text: "⬅️ Back" }]], resize_keyboard: true, one_time_keyboard: false };
+}
 function confirmDeleteKeyboard() {
   return { keyboard: [[{ text: "✅ Confirm Delete" }, { text: "❌ Cancel" }]], resize_keyboard: true, one_time_keyboard: false };
 }
@@ -89,16 +92,31 @@ async function handleHelp(message, env) {
 }
 
 async function handleList(message, env) {
+  // First step: ask which store
+  const sessionStub = env.ADMIN_SESSION.get(env.ADMIN_SESSION.idFromName("global"));
+  await sessionStub.set(String(message.from.id), { step: "awaiting_list_kind" });
+  await tg(env, "sendMessage", {
+    chat_id: message.chat.id,
+    text: "📋 <b>List Data</b>\n\nChoose which store to list:",
+    parse_mode: "HTML",
+    reply_markup: kindKeyboard(),
+  });
+}
+
+async function handleListKind(message, env, sessionStub, kind) {
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const page = await stub.list(null);
+  const page = await stub.list(null, kind);
+  const label = kind === "leaked" ? "Leaked" : "Movies";
   if (!page.ids.length) {
-    await tg(env, "sendMessage", { chat_id: message.chat.id, text: "📭 No movies stored yet." });
+    await sessionStub.clear(String(message.from.id));
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `📭 No <b>${label}</b> stored yet.`, parse_mode: "HTML", reply_markup: moviesMenuKeyboard() });
     return;
   }
-  const lines = [`📋 <b>Movies</b> (${page.ids.length}${page.cursor ? "+" : ""}):`, ""];
+  const lines = [`📋 <b>${label}</b> (${page.ids.length}${page.cursor ? "+" : ""}):`, ""];
   page.ids.forEach((id, i) => lines.push(`${i + 1}. <code>${escHtml(id)}</code>`));
-  if (page.cursor) lines.push("", "<i>More exist — use Edit/Delete with the specific ID you need.</i>");
-  await tg(env, "sendMessage", { chat_id: message.chat.id, text: lines.join("\n"), parse_mode: "HTML" });
+  if (page.cursor) lines.push("", "<i>More exist — use Edit/Delete with the specific ID.</i>");
+  await sessionStub.clear(String(message.from.id));
+  await tg(env, "sendMessage", { chat_id: message.chat.id, text: lines.join("\n"), parse_mode: "HTML", reply_markup: moviesMenuKeyboard() });
 }
 
 async function handleAddJson(message, env, sessionStub) {
@@ -116,40 +134,54 @@ async function handleAddJson(message, env, sessionStub) {
     return;
   }
 
-  // Accept either a single movie object, or an array of movie objects for bulk add.
   const items = Array.isArray(data) ? data : [data];
   if (!items.length) {
     await tg(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ Empty JSON array. Try again, or press Back." });
     return;
   }
 
-  const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const added = [];
+  // Validate
+  const valid = [];
   const failed = [];
-
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (!item || typeof item !== "object" || !item.id || typeof item.id !== "string") {
       failed.push(`#${i + 1}`);
       continue;
     }
-    await stub.put(item.id, item);
+    valid.push(item);
+  }
+  if (!valid.length) {
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `⚠️ No valid items (each needs string "id"). Skipped: ${failed.join(", ")}` });
+    return;
+  }
+
+  // Ask which store — if any item has type:porn suggest Leaked but still ask
+  await sessionStub.set(userId, { step: "awaiting_add_kind", items: valid, failed });
+  await tg(env, "sendMessage", {
+    chat_id: message.chat.id,
+    text: `✅ Parsed <b>${valid.length}</b> item(s).\n\nWhich store should I save to?`,
+    parse_mode: "HTML",
+    reply_markup: kindKeyboard(),
+  });
+}
+
+async function handleAddKind(message, env, sessionStub, kind, pending) {
+  const userId = String(message.from.id);
+  const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
+  const added = [];
+  for (const item of pending.items) {
+    await stub.put(item.id, item, kind);
     await cacheMovie(item.id, item);
     added.push(item.id);
   }
-
   await sessionStub.clear(userId);
-
-  const lines = [];
-  if (added.length) {
-    lines.push(`✅ Added ${added.length} movie(s):`);
-    added.forEach((id) => lines.push(`• <code>${escHtml(id)}</code>`));
+  const label = kind === "leaked" ? "Leaked" : "Movie";
+  const lines = [`✅ Added ${added.length} to <b>${label}</b>:`];
+  added.forEach((id) => lines.push(`• <code>${escHtml(id)}</code>`));
+  if (pending.failed && pending.failed.length) {
+    lines.push(`⚠️ Skipped ${pending.failed.length}: ${pending.failed.join(", ")}`);
   }
-  if (failed.length) {
-    lines.push(`⚠️ Skipped ${failed.length} item(s) missing a valid string "id": ${failed.join(", ")}`);
-  }
-  if (!lines.length) lines.push("⚠️ Nothing was added.");
-
   await tg(env, "sendMessage", { chat_id: message.chat.id, text: lines.join("\n"), parse_mode: "HTML" });
   await sendMoviesMenu(env, message.chat.id);
 }
@@ -163,20 +195,26 @@ async function handleEditId(message, env, sessionStub) {
     return;
   }
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const data = await stub.get(text);
+  let data = await stub.get(text, "movie");
+  let kind = "movie";
   if (!data) {
-    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `⚠️ No movie found with ID <code>${escHtml(text)}</code>. Try again, or press Back.`, parse_mode: "HTML" });
+    data = await stub.get(text, "leaked");
+    kind = "leaked";
+  }
+  if (!data) {
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `⚠️ No entry found with ID <code>${escHtml(text)}</code> in Movie or Leaked. Try again, or press Back.`, parse_mode: "HTML" });
     return;
   }
-  await sessionStub.set(userId, { step: "awaiting_edit_json", id: text });
+  await sessionStub.set(userId, { step: "awaiting_edit_json", id: text, kind });
+  const label = kind === "leaked" ? "Leaked" : "Movie";
   await tg(env, "sendMessage", {
     chat_id: message.chat.id,
-    text: `<b>Current data:</b>\n<pre>${escHtml(JSON.stringify(data, null, 2))}</pre>\n\nSend the new JSON to replace it, or press Back.`,
+    text: `<b>Current data</b> (${label}):\n<pre>${escHtml(JSON.stringify(data, null, 2))}</pre>\n\nSend the new JSON to replace it, or press Back.`,
     parse_mode: "HTML", reply_markup: backOnlyKeyboard(),
   });
 }
 
-async function handleEditJson(message, env, sessionStub, id) {
+async function handleEditJson(message, env, sessionStub, id, kind) {
   const text = (message.text || "").trim();
   const userId = String(message.from.id);
   if (text === "⬅️ Back") {
@@ -192,10 +230,11 @@ async function handleEditJson(message, env, sessionStub, id) {
   }
   data.id = id;
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  await stub.put(id, data);
+  await stub.put(id, data, kind || "movie");
   await cacheMovie(id, data);
   await sessionStub.clear(userId);
-  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `✅ Updated <code>${escHtml(id)}</code>.`, parse_mode: "HTML" });
+  const label = kind === "leaked" ? "Leaked" : "Movie";
+  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `✅ Updated <code>${escHtml(id)}</code> in <b>${label}</b>.`, parse_mode: "HTML" });
   await sendMoviesMenu(env, message.chat.id);
 }
 
@@ -208,16 +247,22 @@ async function handleDeleteId(message, env, sessionStub) {
     return;
   }
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  const data = await stub.get(text);
+  let data = await stub.get(text, "movie");
+  let kind = "movie";
   if (!data) {
-    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `⚠️ No movie found with ID <code>${escHtml(text)}</code>. Try again, or press Back.`, parse_mode: "HTML" });
+    data = await stub.get(text, "leaked");
+    kind = "leaked";
+  }
+  if (!data) {
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: `⚠️ No entry found with ID <code>${escHtml(text)}</code> in Movie or Leaked.`, parse_mode: "HTML" });
     return;
   }
-  await sessionStub.set(userId, { step: "awaiting_delete_confirm", id: text });
-  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `Delete <code>${escHtml(text)}</code>?`, parse_mode: "HTML", reply_markup: confirmDeleteKeyboard() });
+  await sessionStub.set(userId, { step: "awaiting_delete_confirm", id: text, kind });
+  const label = kind === "leaked" ? "Leaked" : "Movie";
+  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `Delete <code>${escHtml(text)}</code> from <b>${label}</b>?`, parse_mode: "HTML", reply_markup: confirmDeleteKeyboard() });
 }
 
-async function handleDeleteConfirm(message, env, sessionStub, id) {
+async function handleDeleteConfirm(message, env, sessionStub, id, kind) {
   const text = (message.text || "").trim();
   const userId = String(message.from.id);
   await sessionStub.clear(userId);
@@ -227,9 +272,10 @@ async function handleDeleteConfirm(message, env, sessionStub, id) {
     return;
   }
   const stub = env.MOVIE_STORE.get(env.MOVIE_STORE.idFromName("global"));
-  await stub.delete(id);
+  await stub.delete(id, kind || "movie");
   await uncacheMovie(id);
-  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `🗑 Deleted <code>${escHtml(id)}</code>.`, parse_mode: "HTML" });
+  const label = kind === "leaked" ? "Leaked" : "Movie";
+  await tg(env, "sendMessage", { chat_id: message.chat.id, text: `🗑 Deleted <code>${escHtml(id)}</code> from <b>${label}</b>.`, parse_mode: "HTML" });
   await sendMoviesMenu(env, message.chat.id);
 }
 
@@ -251,10 +297,24 @@ export async function handleDataUpdate(update, env) {
   const pending = await sessionStub.get(String(userId));
 
   if (pending && pending.step === "awaiting_add_json") return handleAddJson(message, env, sessionStub);
+  if (pending && pending.step === "awaiting_add_kind") {
+    if (text === "⬅️ Back") { await sessionStub.clear(userId); await sendMoviesMenu(env, message.chat.id); return; }
+    if (text === "🎬 Movie") return handleAddKind(message, env, sessionStub, "movie", pending);
+    if (text === "🔥 Leaked") return handleAddKind(message, env, sessionStub, "leaked", pending);
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: "Please choose 🎬 Movie or 🔥 Leaked.", reply_markup: kindKeyboard() });
+    return;
+  }
+  if (pending && pending.step === "awaiting_list_kind") {
+    if (text === "⬅️ Back") { await sessionStub.clear(userId); await sendMoviesMenu(env, message.chat.id); return; }
+    if (text === "🎬 Movie") return handleListKind(message, env, sessionStub, "movie");
+    if (text === "🔥 Leaked") return handleListKind(message, env, sessionStub, "leaked");
+    await tg(env, "sendMessage", { chat_id: message.chat.id, text: "Please choose 🎬 Movie or 🔥 Leaked.", reply_markup: kindKeyboard() });
+    return;
+  }
   if (pending && pending.step === "awaiting_edit_id") return handleEditId(message, env, sessionStub);
-  if (pending && pending.step === "awaiting_edit_json") return handleEditJson(message, env, sessionStub, pending.id);
+  if (pending && pending.step === "awaiting_edit_json") return handleEditJson(message, env, sessionStub, pending.id, pending.kind);
   if (pending && pending.step === "awaiting_delete_id") return handleDeleteId(message, env, sessionStub);
-  if (pending && pending.step === "awaiting_delete_confirm") return handleDeleteConfirm(message, env, sessionStub, pending.id);
+  if (pending && pending.step === "awaiting_delete_confirm") return handleDeleteConfirm(message, env, sessionStub, pending.id, pending.kind);
 
   if (text.startsWith("/help")) return handleHelp(message, env);
   if (text === "📋 List") return handleList(message, env);
