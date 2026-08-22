@@ -1534,13 +1534,15 @@ async function cacheReceiveEditPermalink(msg, env, uid, session) {
     original_json: jsonStr,
   });
 
-  // ONE single message: try media+caption, else text only
+  // ONE single message: try media+caption (thumbnail preview), else text only
   const header =
-    `Current data for <code>${escapeHtml(permalink)}</code> in <b>${channel}</b>:\n\n` +
+    `📝 <b>Edit Cache Item</b>\n\n` +
+    `<b>Channel:</b> ${escapeHtml(channel)}\n` +
+    `<b>ID:</b> <code>${escapeHtml(permalink)}</code>\n\n` +
     `<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
-    `Send the <b>updated JSON</b> (keep the same <code>permalink</code>).\n` +
-    `To change thumbnail: put file_id/URL in <code>tg_thumbnail</code>, OR attach photo/video/GIF with JSON as caption.\n` +
-    `Send <code>Cancel</code> to abort.`;
+    `✏️ Reply with the <b>updated JSON</b> (keep the same <code>permalink</code>).\n` +
+    `📷 To update thumbnail: change <code>tg_thumbnail</code>, or attach a photo/video/GIF with the JSON as caption.\n` +
+    `🚫 Type <code>Cancel</code> to abort.`;
 
   if (item.tg_thumbnail && header.length <= 1024) {
     const mtype = item.media_type || "photo";
