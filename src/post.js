@@ -170,6 +170,7 @@ const FIELD_PROMPTS = {
   quality: `${getEmoji('quality')} Send the new <b>Quality</b>:\n<i>e.g. 1080p BluRay / 4K HDR</i>`,
   duration: `${getEmoji('time')} Send the new <b>Duration</b>:\n<i>e.g. 2h 28m</i>`,
   release_year: `${getEmoji('release')} Send the new <b>Release Year</b>:\n<i>e.g. 2021</i>`,
+  leaked: `${getEmoji('release')} Send the new <b>Leaked</b> year/date:\n<i>e.g. 2023</i>`,
   bg_thumbnail: `${getEmoji('photo')} Send the new <b>BG Thumbnail</b> URL (hidden image used inside the Blogger post).\nSend <code>none</code> to remove it.`,
   tg_thumbnail: `${getEmoji('camera')} Send the new <b>TG Thumbnail</b>.\nAttach a photo, or send a direct image URL.\nSend <code>none</code> to remove it.`,
   video_url: `${getEmoji('video')} Send the new <b>Video URL</b> (hidden in the Blogger post, read by your template).\nSend <code>none</code> to clear it.`,
@@ -203,6 +204,7 @@ const CACHE_EDIT_FIELDS = [
   ["Quality", "quality"],
   ["Duration", "duration"],
   ["Release Year", "release_year"],
+  ["Leaked", "leaked"],
   ["TG Thumbnail", "tg_thumbnail"],
   ["Buttons", "links"],
 ];
@@ -836,13 +838,28 @@ function cacheStub(env, channelName) {
   return env.CACHE_QUEUE.get(env.CACHE_QUEUE.idFromName(channelName));
 }
 
+// Cache is Telegram-only — keep only fields needed to auto-post to channels.
 function toCacheItem(post) {
-  return {
-    tg_title: post.tg_title, bg_title: post.bg_title, language: post.language,
-    quality: post.quality, duration: post.duration, release_year: post.release_year,
-    bg_thumbnail: post.bg_thumbnail, tg_thumbnail: post.tg_thumbnail, video_url: post.video_url,
-    permalink: resolvePermalink(post), labels: post.labels, links: post.links,
+  const item = {
+    tg_title: post.tg_title || "Untitled",
+    language: post.language || "N/A",
+    quality: post.quality || "N/A",
+    duration: post.duration || "N/A",
+    release_year: post.release_year || "N/A",
+    tg_thumbnail: post.tg_thumbnail || null,
+    file_id: post.file_id || null,
+    media_type: post.media_type || "photo",
+    permalink: resolvePermalink(post),
+    links: Array.isArray(post.links) ? post.links : [],
   };
+  if (post.leaked && String(post.leaked).toUpperCase() !== "N/A") {
+    item.leaked = post.leaked;
+  }
+  // Prefer telegram file_id when thumbnail is a file_id (not a URL)
+  if (!item.file_id && item.tg_thumbnail && !String(item.tg_thumbnail).startsWith("http")) {
+    item.file_id = item.tg_thumbnail;
+  }
+  return item;
 }
 
 async function addPublishedToCache(env, channelName, posts) {
@@ -929,58 +946,86 @@ function extractPostFromMessage(msg) {
   };
 }
 
-function buildUploadTemplateItem(extracted) {
-  return {
-    TGTitle: extracted.title || "Untitled",
-    Language: extracted.language || "N/A",
-    Quality: extracted.quality || "N/A",
-    Duration: extracted.duration || "N/A",
-    Release_year: extracted.releaseYear || "N/A",
-    TGTitlehumbnail: extracted.thumbnail || "",
-    Permalink: "N/A",
-    links: [
-      {
-        text: "How To Download",
-        url: CACHE_HOW_TO_DOWNLOAD_URL,
-      },
-      {
-        text: "Download",
-        url: DOWNLOAD_LINK_PLACEHOLDER,
-      },
-    ],
-  };
+// Pick first non-empty value from alternate key names (supports both TGTitle and tg_title styles)
+function pickField(data, ...keys) {
+  for (const k of keys) {
+    if (data[k] === undefined || data[k] === null) continue;
+    const s = String(data[k]).trim();
+    if (s !== "") return data[k];
+  }
+  return undefined;
 }
 
+function buildUploadTemplateItem(extracted, channelName) {
+  const isViral = channelName === "Viral Vids";
+  const base = {
+    tg_title: extracted.title || "Untitled",
+    language: extracted.language || "N/A",
+    quality: extracted.quality || "N/A",
+    duration: extracted.duration || "N/A",
+    tg_thumbnail: extracted.thumbnail || "",
+    permalink: "N/A",
+    links: [
+      { text: "How To Download", url: CACHE_HOW_TO_DOWNLOAD_URL },
+      { text: "Download", url: DOWNLOAD_LINK_PLACEHOLDER },
+    ],
+  };
+  if (isViral) {
+    base.leaked = extracted.releaseYear || "N/A";
+  } else {
+    base.release_year = extracted.releaseYear || "N/A";
+  }
+  return base;
+}
+
+// Cache is Telegram-only. Accepts both uppercase (TGTitle) and lowercase (tg_title) keys.
+// Extra Blogger-only fields (bg_title, bg_thumbnail, video_url, labels, …) are ignored.
 function buildCacheItem(data, photoFileId, channelName) {
   const rawLinks = Array.isArray(data.links) ? data.links : [];
   const links = rawLinks.filter((l) => l && typeof l.text === "string" && typeof l.url === "string" && (l.url.startsWith("http://") || l.url.startsWith("https://")));
-  let permalink = String(data["Permalink"] || "").trim();
-  if (!permalink || permalink.toUpperCase() === "N/A") {
-    permalink = buildSlug(data["TGTitle"], data["Release_year"]);
-  }
+
+  const tgTitle = pickField(data, "tg_title", "TGTitle", "title") || "Untitled";
+  const language = pickField(data, "language", "Language") || "N/A";
+  const quality = pickField(data, "quality", "Quality") || "N/A";
+  const duration = pickField(data, "duration", "Duration") || "N/A";
+  const releaseYear = pickField(data, "release_year", "Release_year", "ReleaseYear") || "N/A";
+  const leakedRaw = pickField(data, "leaked", "Leaked");
+  const mediaType = pickField(data, "media_type", "mediaType") || "photo";
+
   const explicitFileId =
-    data["File_ID"] ||
-    data["file_id"] ||
-    data["FileId"] ||
-    data["TGFileID"] ||
-    data["TGFileId"] ||
-    data["TGFile_ID"] ||
+    pickField(data, "file_id", "File_ID", "FileId", "TGFileID", "TGFileId", "TGFile_ID") || null;
+  let thumb =
+    photoFileId ||
+    explicitFileId ||
+    pickField(data, "tg_thumbnail", "TGTitlehumbnail", "TGThumbnail", "thumbnail") ||
     null;
+  if (thumb && String(thumb).toUpperCase() === "N/A") thumb = null;
+
+  let permalink = String(pickField(data, "permalink", "Permalink") || "").trim();
+  if (!permalink || permalink.toUpperCase() === "N/A") {
+    const yr = releaseYear !== "N/A" ? releaseYear : (leakedRaw && String(leakedRaw).toUpperCase() !== "N/A" ? leakedRaw : "");
+    permalink = buildSlug(tgTitle, yr);
+  }
+
   const item = {
-    tg_title: data["TGTitle"] || "Untitled",
-    language: data["Language"] || "N/A",
-    quality: data["Quality"] || "N/A",
-    duration: data["Duration"] || "N/A",
-    release_year: data["Release_year"] || "N/A",
-    tg_thumbnail: photoFileId || explicitFileId || data["TGTitlehumbnail"] || null,
-    file_id: photoFileId || explicitFileId || null,
+    tg_title: tgTitle,
+    language,
+    quality,
+    duration,
+    release_year: releaseYear,
+    tg_thumbnail: thumb,
+    file_id: photoFileId || explicitFileId || (thumb && !String(thumb).startsWith("http") ? thumb : null) || null,
+    media_type: mediaType,
     permalink,
     links,
     channel: channelName,
   };
+  if (leakedRaw && String(leakedRaw).toUpperCase() !== "N/A") {
+    item.leaked = String(leakedRaw);
+  }
   return {
     item,
-    skippedLinks: rawLinks.length - links.length
+    skippedLinks: rawLinks.length - links.length,
   };
 }
 
@@ -991,7 +1036,7 @@ function csvEscape(v) {
 }
 
 function buildCsv(items) {
-  const headers = ["channel", "permalink", "tg_title", "language", "quality", "duration", "release_year", "tg_thumbnail", "links"];
+  const headers = ["channel", "permalink", "tg_title", "language", "quality", "duration", "release_year", "leaked", "tg_thumbnail", "links"];
   const rows = [headers.join(",")];
   for (const it of items) {
     const row = headers.map((h) => (h === "links" ? csvEscape(JSON.stringify(it.links || [])) : csvEscape(it[h])));
@@ -1072,23 +1117,37 @@ async function cacheBtnUpload(env, uid) {
 
 async function cbCacheUploadChannel(cq, env, uid, channel) {
   await answerCallback(env, cq.id);
-  const single = JSON.stringify({
-    TGTitle: "Your Movie Name (2026)",
-    Language: "Your Movie Language",
-    Quality: "Your Quality",
-    Duration: "Your Duration",
-    Release_year: "Your Release Year",
-    TGTitlehumbnail: "your_thumbnail_url_or_telegram_file_id",
-    Permalink: "N/A",
-    links: [
-      { text: "How To Download", url: CACHE_HOW_TO_DOWNLOAD_URL },
-      { text: "Download", url: "your_download_link" },
-    ],
-  }, null, 2);
-  const bulk = JSON.stringify([
-    JSON.parse(single),
-    JSON.parse(single),
-  ], null, 2);
+  const isViral = channel === "Viral Vids";
+  // Telegram-only fields. Accepts both tg_title and TGTitle styles.
+  const singleObj = isViral
+    ? {
+        tg_title: "জান্নাত তোহা এর নতুন ভাইরাল ভিডিও 😚🙈",
+        language: "Bangla",
+        quality: "720p",
+        duration: "3m 25s",
+        leaked: "2023",
+        tg_thumbnail: "https://example.com/poster.jpg",
+        permalink: "N/A",
+        links: [
+          { text: "How To Download", url: CACHE_HOW_TO_DOWNLOAD_URL },
+          { text: "Download", url: "https://your-download-link.com" },
+        ],
+      }
+    : {
+        tg_title: "Your Movie Name (2026)",
+        language: "English / Hindi",
+        quality: "1080p BluRay",
+        duration: "2h 15m",
+        release_year: "2026",
+        tg_thumbnail: "https://example.com/poster.jpg",
+        permalink: "N/A",
+        links: [
+          { text: "How To Download", url: CACHE_HOW_TO_DOWNLOAD_URL },
+          { text: "Download", url: "https://your-download-link.com" },
+        ],
+      };
+  const single = JSON.stringify(singleObj, null, 2);
+  const bulk = JSON.stringify([singleObj, { ...singleObj, tg_title: singleObj.tg_title + " #2", permalink: "N/A" }], null, 2);
   await setSession(env, uid, {
     state: "cache_upload_wait_data",
     cache_channel: channel,
@@ -1097,10 +1156,11 @@ async function cbCacheUploadChannel(cq, env, uid, channel) {
   });
   const text =
     `Uploading to: <b>${channel}</b>\n\n` +
-    `Send a single item as JSON, or a JSON array for bulk. You can also attach a .txt file containing the JSON.\n\n` +
+    `Cache stores <b>Telegram-only</b> fields (no Blogger extras).\n` +
+    `Send a single item as JSON, or a JSON array for bulk. You can also attach a .txt / .json file.\n\n` +
     `<b>Or forward channel posts:</b> forward one or more existing posts here. ` +
-    `The bot will collect them and, after <b>Done</b>, generate one editable bulk JSON. ` +
-    `The <b>How To Download</b> link is filled automatically; only the per-post <b>Download</b> links need to be replaced.\n\n` +
+    `After <b>Done</b>, the bot generates editable bulk JSON. ` +
+    `How To Download is auto-filled — only replace each Download URL.\n\n` +
     `<b>Single item example</b>:\n<code>${escapeHtml(single)}</code>\n\n` +
     `<b>Bulk example</b>:\n<code>${escapeHtml(bulk)}</code>`;
   await sendMessage(env, uid, text, movieCacheMenuKeyboard());
@@ -1152,7 +1212,8 @@ async function uploadJsonToCache(msg, env, uid, session) {
   let invalid = 0;
   let linkWarnings = 0;
   for (const d of rawItems) {
-    if (!d || !d["TGTitle"]) {
+    // Accept both TGTitle (legacy) and tg_title (edit / post format)
+    if (!d || !(d.TGTitle || d.tg_title || d.title)) {
       invalid++;
       continue;
     }
@@ -1168,7 +1229,7 @@ async function uploadJsonToCache(msg, env, uid, session) {
     await sendMessage(
       env,
       uid,
-      `No valid items found. Every item must contain <code>TGTitle</code>.`,
+      `No valid items found. Every item must contain <code>tg_title</code> (or <code>TGTitle</code>).`,
       movieCacheMenuKeyboard()
     );
     return;
@@ -1289,7 +1350,7 @@ async function cbCacheUploadDone(cq, env, uid, action) {
     await sendMessage(env, uid, `Back to Movie Cache.`, movieCacheMenuKeyboard());
     return;
   }
-  const templateItems = pending.map(buildUploadTemplateItem);
+  const templateItems = pending.map((ex) => buildUploadTemplateItem(ex, channel));
   const jsonData = templateItems.length === 1
     ? templateItems[0]
     : templateItems;
@@ -1521,10 +1582,23 @@ async function cacheReceiveEditPermalink(msg, env, uid, session) {
     return;
   }
 
-  const editable = { ...item };
-  delete editable.added_at;
-  delete editable.next_auto_at;
-  delete editable.posted_at;
+  // Telegram-only fields for edit display (strip internal + Blogger-only leftovers)
+  const editable = {
+    tg_title: item.tg_title,
+    language: item.language,
+    quality: item.quality,
+    duration: item.duration,
+    release_year: item.release_year,
+    leaked: item.leaked,
+    tg_thumbnail: item.tg_thumbnail || item.file_id || null,
+    media_type: item.media_type || "photo",
+    permalink: item.permalink,
+    links: item.links || [],
+  };
+  // Drop undefined / null optional keys so JSON stays clean
+  if (!editable.leaked || String(editable.leaked).toUpperCase() === "N/A") delete editable.leaked;
+  if (!editable.tg_thumbnail || String(editable.tg_thumbnail).toUpperCase() === "N/A") editable.tg_thumbnail = null;
+  if (!editable.release_year) editable.release_year = "N/A";
 
   const jsonStr = JSON.stringify(editable, null, 2);
   await setSession(env, uid, {
@@ -1534,34 +1608,62 @@ async function cacheReceiveEditPermalink(msg, env, uid, session) {
     original_json: jsonStr,
   });
 
-  // ONE single message: try media+caption (thumbnail preview), else text only
-  const header =
-    `📝 <b>Edit Cache Item</b>\n\n` +
-    `<b>Channel:</b> ${escapeHtml(channel)}\n` +
-    `<b>ID:</b> <code>${escapeHtml(permalink)}</code>\n\n` +
-    `<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
+  // ONE single message: always try thumbnail as media preview when available
+  const instructions =
     `✏️ Reply with the <b>updated JSON</b> (keep the same <code>permalink</code>).\n` +
     `📷 To update thumbnail: change <code>tg_thumbnail</code>, or attach a photo/video/GIF with the JSON as caption.\n` +
     `🚫 Type <code>Cancel</code> to abort.`;
 
-  if (item.tg_thumbnail && header.length <= 1024) {
+  const fullCaption =
+    `📝 <b>Edit Cache Item</b>\n\n` +
+    `<b>Channel:</b> ${escapeHtml(channel)}\n` +
+    `<b>ID:</b> <code>${escapeHtml(permalink)}</code>\n\n` +
+    `<pre>${escapeHtml(jsonStr)}</pre>\n\n` +
+    instructions;
+
+  // Short caption when full JSON exceeds Telegram's 1024-char photo caption limit
+  const shortCaption =
+    `📝 <b>Edit Cache Item</b>\n\n` +
+    `<b>Channel:</b> ${escapeHtml(channel)}\n` +
+    `<b>ID:</b> <code>${escapeHtml(permalink)}</code>\n` +
+    `<b>Title:</b> ${escapeHtml(item.tg_title || "—")}\n\n` +
+    `<i>JSON is long — full data was saved. Reply with the updated JSON below.</i>\n\n` +
+    instructions;
+
+  const thumb = item.tg_thumbnail || item.file_id || null;
+  if (thumb) {
+    const caption = fullCaption.length <= 1024 ? fullCaption : shortCaption;
     const mtype = item.media_type || "photo";
     try {
       if (mtype === "animation") {
-        await tg(env, "sendAnimation", { chat_id: uid, animation: item.tg_thumbnail, caption: header, parse_mode: "HTML", reply_markup: movieCacheMenuKeyboard() });
+        await tg(env, "sendAnimation", { chat_id: uid, animation: thumb, caption, parse_mode: "HTML", reply_markup: movieCacheMenuKeyboard() });
         return;
       }
       if (mtype === "video") {
-        await sendVideo(env, uid, item.tg_thumbnail, header, movieCacheMenuKeyboard());
+        await sendVideo(env, uid, thumb, caption, movieCacheMenuKeyboard());
         return;
       }
-      await sendPhoto(env, uid, item.tg_thumbnail, header, movieCacheMenuKeyboard());
+      await sendPhoto(env, uid, thumb, caption, movieCacheMenuKeyboard());
       return;
     } catch (e) {
       console.error("cache edit media+json failed:", e);
     }
   }
-  await sendMessage(env, uid, header, movieCacheMenuKeyboard());
+
+  // No thumbnail / media failed → text message (or document if too long for text)
+  if (fullCaption.length <= 4096) {
+    await sendMessage(env, uid, fullCaption, movieCacheMenuKeyboard());
+  } else {
+    await sendDocument(env, uid, `${permalink || "cache_item"}.json`, jsonStr, "application/json");
+    await sendMessage(
+      env, uid,
+      `📝 <b>Edit Cache Item</b>\n\n` +
+        `<b>Channel:</b> ${escapeHtml(channel)}\n` +
+        `<b>ID:</b> <code>${escapeHtml(permalink)}</code>\n\n` +
+        `Full JSON attached above.\n\n` + instructions,
+      movieCacheMenuKeyboard()
+    );
+  }
 }
 
 async function cacheReceiveEditJson(msg, env, uid, session) {
@@ -2039,14 +2141,19 @@ function formatPost(p, opts = {}) {
     lines.push(`\n🖥 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 🚀`);
     return lines.join("\n");
   }
-  // Movie - use movie icon
-  const lines = [`${getEmoji('movie')} <b>${escapeHtml(p.tg_title || "Untitled")}</b>\n`];
+  // Movie / Viral cache style
+  const isViralStyle = !!(p.leaked && String(p.leaked).toUpperCase() !== "N/A");
+  const lines = [`${isViralStyle ? "🔥" : getEmoji('movie')} <b>${escapeHtml(p.tg_title || "Untitled")}</b>\n`];
   const fields = [
     [`${getEmoji('language')} Language`, p.language],
-    [`${getEmoji('quality')} Movie Quality`, p.quality],
+    [`${getEmoji('quality')} ${isViralStyle ? "Quality" : "Movie Quality"}`, p.quality],
     [`${getEmoji('time')} Duration`, p.duration],
-    [`${getEmoji('release')} Movie Release`, p.release_year],
   ];
+  if (isViralStyle) {
+    fields.push([`🔥 Leaked`, p.leaked]);
+  } else if (p.release_year && String(p.release_year).toUpperCase() !== "N/A") {
+    fields.push([`${getEmoji('release')} Movie Release`, p.release_year]);
+  }
   for (const [label, val] of fields) if (val && val !== "N/A") lines.push(`<b>${label} :</b>  ${escapeHtml(val)}`);
   lines.push(`\n${getEmoji('watch')} 𝗪𝗮𝘁𝗰𝗵 𝗢𝗻𝗹𝗶𝗻𝗲 / 𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 ${getEmoji('download')}`);
   if (opts.note) lines.push(`\n${getEmoji('info')} <i>Note: Download button auto-added on Both. How To Download always auto-added.</i>`);
